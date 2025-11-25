@@ -83,8 +83,35 @@ Lee_Workflow - Auto Move Item.lua
 2. 测试通过后，复制到 `Markers/MarkerFunctions/`
 3. Marker Workstation会自动加载新功能
 
+## 📚 文档
+
+- **[文档目录](Doc/README.md)** - 完整文档索引
+- **[版本控制指南](Doc/VERSION_CONTROL_GUIDE.md)** - Git 使用和版本管理
+- **[项目维护指南](Doc/MAINTENANCE.md)** - 项目维护规范
+
+## 🔄 版本控制
+
+本项目使用 Git 进行版本管理，已推送到 GitHub：
+- **仓库地址**: https://github.com/leeakun373/Lee_Reaper_Scripts
+- **版本控制指南**: 查看 [Doc/VERSION_CONTROL_GUIDE.md](Doc/VERSION_CONTROL_GUIDE.md)
+
+### 快速开始
+
+```bash
+# 查看状态
+git status
+
+# 提交修改
+git add .
+git commit -m "feat: 添加新功能"
+git push origin master
+```
+
+详细操作请参考 [版本控制指南](Doc/VERSION_CONTROL_GUIDE.md)。
+
 ## 🔄 更新日志
 
+- 2024-11-18: 添加版本控制指南和维护文档
 - 2024-11-18: 添加"Implode Mono to Stereo"功能（基于rodilab脚本）
 - 2024-11-18: 修复Bounce脚本的offline问题（分离offline/online操作，添加错误检查）
 - 2024-11-18: 整理根目录脚本，将有用脚本移至对应分类目录
