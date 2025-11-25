@@ -67,30 +67,30 @@
    - 实现建议和方案选择
 
 10. **[Slint UI框架与REAPER兼容性分析](SLINT_FOR_REAPER_ANALYSIS.md)**
-    - Slint框架特点分析
-    - REAPER脚本兼容性评估
-    - 适合REAPER的UI框架推荐
-    - 针对Radial Menu功能的实现建议
+   - Slint框架特点分析
+   - REAPER脚本兼容性评估
+   - 适合REAPER的UI框架推荐
+   - 针对Radial Menu功能的实现建议
 
 11. **[REAPER C++扩展开发方案](REAPER_CPP_EXTENSION_DEVELOPMENT.md)**
-    - C++扩展开发概述
-    - 使用Slint等现代UI框架的方法
-    - 开发步骤和部署流程
-    - 参考项目和注意事项
+   - C++扩展开发概述
+   - 使用Slint等现代UI框架的方法
+   - 开发步骤和部署流程
+   - 参考项目和注意事项
 
 12. **[部署复杂度对比](DEPLOYMENT_COMPARISON.md)**
-    - Lua 脚本 vs C++ 扩展部署对比
-    - 开发效率和维护成本分析
-    - 实际案例对比
-    - 技术选型建议
+   - Lua 脚本 vs C++ 扩展部署对比
+   - 开发效率和维护成本分析
+   - 实际案例对比
+   - 技术选型建议
 
 ### 项目记录
 
 13. **[对话摘要](CONVERSATION_SUMMARY.md)**
-    - 项目讨论的关键发现
-    - 技术选型分析
-    - 推荐方案和决策点
-    - 下一步行动
+   - 项目讨论的关键发现
+   - 技术选型分析
+   - 推荐方案和决策点
+   - 下一步行动
 
 ## 📖 快速导航
 
