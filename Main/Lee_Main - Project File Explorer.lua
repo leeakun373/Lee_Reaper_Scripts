@@ -17,33 +17,81 @@ end
 
 -- Get script directory
 local script_path = debug.getinfo(1, 'S').source:match("@(.+[/\\])")
+local path_sep = package.config:sub(1,1) == "/" and "/" or "\\"
+
+-- Load theme system from Item Workstation
+local function loadModule(module_path)
+    local f = loadfile(module_path)
+    if f then
+        return f()
+    end
+    return nil
+end
+
+local Themes = loadModule(script_path .. ".." .. path_sep .. "Items" .. path_sep .. "ItemsWorkstation" .. path_sep .. "Config" .. path_sep .. "Themes.lua")
+
+-- Use modern theme
+if Themes then
+    Themes.setCurrentTheme("modern")
+end
 
 -- GUI variables
 local ctx = reaper.ImGui_CreateContext('Project File Explorer')
+
+-- Font size setting
+local font_size = 14  -- Slightly larger than default (13)
+
 local gui = {
     visible = true,
     width = 700,
     height = 600
 }
 
--- Color scheme
-local COLORS = {
-    TEXT_NORMAL    = 0xEEEEEEFF,
-    TEXT_DIM       = 0x888888FF,
-    TEXT_FOLDER    = 0x42A5F5FF,
-    TEXT_FILE      = 0xCCCCCCFF,
-    TEXT_AUDIO     = 0x66BB6AFF,
-    TEXT_PROJECT   = 0xFFA726FF,
-    TEXT_PARENT    = 0xFFA726FF,
-    BTN_UP         = 0x666666AA,
-    BTN_REFRESH    = 0x666666AA,
-    BTN_OPEN       = 0x42A5F5AA,
-    BTN_HOME       = 0x4CAF50AA,
-    BTN_INSERT     = 0x66BB6AAA,
-    BG_ROW_ALT     = 0xFFFFFF0D,
-    BG_ROW_SELECT  = 0x42A5F533,
-    BG_ROW_HOVER   = 0xFFFFFF1A,
-}
+-- Get colors from theme
+local function getColors()
+    local theme = Themes and Themes.getCurrentTheme() or nil
+    if not theme then
+        -- Fallback colors if theme not loaded
+        return {
+            TEXT_NORMAL    = 0xEEEEEEFF,
+            TEXT_DIM       = 0x888888FF,
+            TEXT_FOLDER    = 0x42A5F5FF,
+            TEXT_FILE      = 0xCCCCCCFF,
+            TEXT_AUDIO     = 0x0F766EFF,  -- Use theme color (Teal-700)
+            TEXT_PROJECT   = 0xFFA726FF,
+            TEXT_PARENT    = 0xFFA726FF,
+            BTN_UP         = 0x27272AFF,
+            BTN_REFRESH    = 0x27272AFF,
+            BTN_OPEN       = 0x27272AFF,
+            BTN_HOME       = 0x0F766EFF,  -- Use theme color
+            BTN_INSERT     = 0x0F766EFF,  -- Use theme color
+            BG_ROW_ALT     = 0xFFFFFF0D,
+            BG_ROW_SELECT  = 0x3F3F46FF,  -- Use theme HEADER color
+            BG_ROW_HOVER   = 0x52525BFF,  -- Use theme HEADER_HOVERED color
+        }
+    end
+    
+    -- Map theme colors to Project File Explorer colors
+    return {
+        TEXT_NORMAL    = theme.TEXT or theme.TEXT_NORMAL or 0xE4E4E7FF,
+        TEXT_DIM       = theme.TEXT_DISABLED or theme.TEXT_DIM or 0xA1A1AAFF,
+        TEXT_FOLDER    = 0x42A5F5FF,  -- Keep folder color (blue)
+        TEXT_FILE      = theme.TEXT or theme.TEXT_NORMAL or 0xE4E4E7FF,
+        TEXT_AUDIO     = theme.BTN_ITEM_ON or 0x0F766EFF,  -- Use theme item color
+        TEXT_PROJECT   = 0xFFA726FF,  -- Keep project color (orange)
+        TEXT_PARENT    = 0xFFA726FF,  -- Keep parent color (orange)
+        BTN_UP         = theme.BTN_RELOAD or 0x27272AFF,
+        BTN_REFRESH    = theme.BTN_RELOAD or 0x27272AFF,
+        BTN_OPEN       = theme.BTN_CUSTOM or 0x27272AFF,
+        BTN_HOME       = theme.BTN_ITEM_ON or 0x0F766EFF,  -- Use theme item color
+        BTN_INSERT     = theme.BTN_ITEM_ON or 0x0F766EFF,  -- Use theme item color
+        BG_ROW_ALT     = 0xFFFFFF0D,
+        BG_ROW_SELECT  = theme.HEADER or 0x3F3F46FF,
+        BG_ROW_HOVER   = theme.HEADER_HOVERED or 0x52525BFF,
+    }
+end
+
+local COLORS = getColors()
 
 -- State
 local current_path = ""
@@ -301,14 +349,31 @@ Initialize()
 
 -- GUI main loop
 local function main_loop()
-    reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_WindowPadding(), 10, 10)
-    reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_ItemSpacing(), 6, 6)
+    -- Apply theme
+    local style_var_count = 0
+    local color_count = 0
+    if Themes then
+        local theme = Themes.getCurrentTheme()
+        if theme then
+            style_var_count, color_count = Themes.applyTheme(ctx, theme)
+        end
+    end
+    
+    -- Track additional style vars we push (for themes without style_vars)
+    local additional_style_vars = 0
+    if not Themes or not Themes.getCurrentTheme() or not Themes.getCurrentTheme().style_vars then
+        reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_WindowPadding(), 10, 10)
+        reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_ItemSpacing(), 6, 6)
+        additional_style_vars = 2
+    end
     
     reaper.ImGui_SetNextWindowSize(ctx, gui.width, gui.height, reaper.ImGui_Cond_FirstUseEver())
     
     local visible, open = reaper.ImGui_Begin(ctx, 'Project File Explorer', true, reaper.ImGui_WindowFlags_None())
     
     if visible then
+        -- Push larger font size for all text
+        reaper.ImGui_PushFont(ctx, nil, font_size)
         -- Header: Path display
         reaper.ImGui_TextColored(ctx, COLORS.TEXT_NORMAL, "路径:")
         reaper.ImGui_SameLine(ctx)
@@ -553,10 +618,21 @@ local function main_loop()
             reaper.ImGui_TextColored(ctx, COLORS.TEXT_DIM, footer_text)
         end
         
+        -- Pop font size
+        reaper.ImGui_PopFont(ctx)
+        
         reaper.ImGui_End(ctx)
     end
     
-    reaper.ImGui_PopStyleVar(ctx, 2)
+    -- Pop theme styles and colors
+    if Themes then
+        Themes.popTheme(ctx, style_var_count, color_count)
+    end
+    
+    -- Pop additional style vars we added (for themes without style_vars)
+    if additional_style_vars > 0 then
+        reaper.ImGui_PopStyleVar(ctx, additional_style_vars)
+    end
     
     if open and gui.visible then
         reaper.defer(main_loop)

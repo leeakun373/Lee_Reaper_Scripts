@@ -25,8 +25,8 @@ local function detectWorkstations()
     
     -- 定义 Workstation 搜索路径
     local search_paths = {
-        {name = "Item Workstation", path = "Scripts" .. sep .. "Lee_Scripts" .. sep .. "Items" .. sep .. "Lee_Items - Workstation.lua"},
-        {name = "Marker Workstation", path = "Scripts" .. sep .. "Lee_Scripts" .. sep .. "Markers" .. sep .. "Lee_Markers - Workstation.lua"}
+        {name = "Item Workstation", path = "Scripts" .. sep .. "Lee_Scripts" .. sep .. "Items" .. sep .. "ItemsWorkstation" .. sep .. "Lee_Items - Workstation.lua"},
+        {name = "Marker Workstation", path = "Scripts" .. sep .. "Lee_Scripts" .. sep .. "Markers" .. sep .. "MarkersWorkstation" .. sep .. "Lee_Markers - Workstation.lua"}
     }
     
     for _, ws_info in ipairs(search_paths) do

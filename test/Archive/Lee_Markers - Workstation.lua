@@ -22,6 +22,26 @@ end
 local script_path = debug.getinfo(1, 'S').source:match("@(.+[/\\])")
 local functions_dir = script_path .. "MarkerFunctions" .. (package.config:sub(1,1) == "/" and "/" or "\\")
 
+-- Toggle functionality: Check if script is already running
+local SCRIPT_ID = "MarkerWorkstation_Running"
+local CLOSE_REQUEST = "MarkerWorkstation_CloseRequest"
+local is_running = reaper.GetExtState("MarkerWorkstation", SCRIPT_ID) == "1"
+
+if is_running then
+    -- Script is already running, request it to close
+    reaper.SetExtState("MarkerWorkstation", CLOSE_REQUEST, "1", false)
+    -- Wait a moment for the other instance to close
+    reaper.defer(function()
+        reaper.SetExtState("MarkerWorkstation", SCRIPT_ID, "0", false)
+        reaper.SetExtState("MarkerWorkstation", CLOSE_REQUEST, "0", false)
+    end)
+    return
+else
+    -- Mark script as running
+    reaper.SetExtState("MarkerWorkstation", SCRIPT_ID, "1", false)
+    reaper.SetExtState("MarkerWorkstation", CLOSE_REQUEST, "0", false)
+end
+
 -- GUI variables
 local ctx = reaper.ImGui_CreateContext('Marker Workstation')
 local gui = {
@@ -55,7 +75,8 @@ local editing_index = nil
 local new_action = {
     name = "",
     action_id = "",
-    description = ""
+    description = "",
+    type = "marker"  -- Default to "marker", can be "marker" or "region"
 }
 
 -- Layout management
@@ -385,11 +406,13 @@ local function loadCustomActions()
         local name = reaper.GetExtState("MarkerWorkstation", "CustomAction_" .. i .. "_Name")
         local action_id = reaper.GetExtState("MarkerWorkstation", "CustomAction_" .. i .. "_ID")
         local description = reaper.GetExtState("MarkerWorkstation", "CustomAction_" .. i .. "_Description")
+        local action_type = reaper.GetExtState("MarkerWorkstation", "CustomAction_" .. i .. "_Type")
         if name ~= "" and action_id ~= "" then
             table.insert(custom_actions, {
                 name = name,
                 action_id = action_id,
-                description = description or ""
+                description = description or "",
+                type = (action_type == "" or action_type == nil) and "marker" or action_type
             })
         end
     end
@@ -402,6 +425,7 @@ local function saveCustomActions()
         reaper.SetExtState("MarkerWorkstation", "CustomAction_" .. i .. "_Name", action.name, true)
         reaper.SetExtState("MarkerWorkstation", "CustomAction_" .. i .. "_ID", action.action_id, true)
         reaper.SetExtState("MarkerWorkstation", "CustomAction_" .. i .. "_Description", action.description or "", true)
+        reaper.SetExtState("MarkerWorkstation", "CustomAction_" .. i .. "_Type", action.type or "marker", true)
     end
 end
 
@@ -472,10 +496,15 @@ local function getFunctionByName(func_name)
     for _, action in ipairs(custom_actions) do
         if action and action.name == func_name then
             local action_id = tonumber(action.action_id)
-            if action_id then
+            -- Also try named command lookup if number conversion fails
+            if not action_id then
+                action_id = reaper.NamedCommandLookup(action.action_id)
+            end
+            if action_id and action_id > 0 then
                 return {
                     name = action.name,
                     description = action.description or "",
+                    type = action.type or "marker",
                     execute = function()
                         reaper.Main_OnCommand(action_id, 0)
                         return true, "Executed: " .. action.name
@@ -544,6 +573,7 @@ local function getAllAvailableFunctions()
                     table.insert(all, {
                         name = action.name,
                         description = action.description or "",
+                        type = action.type or "marker",
                         execute = function()
                             reaper.Main_OnCommand(action_id, 0)
                             return true, "Executed: " .. action.name
@@ -589,6 +619,15 @@ end
 
 -- GUI main loop
 local function main_loop()
+    -- Check for close request (toggle functionality)
+    if reaper.GetExtState("MarkerWorkstation", CLOSE_REQUEST) == "1" then
+        gui.visible = false
+        reaper.SetExtState("MarkerWorkstation", SCRIPT_ID, "0", false)
+        reaper.SetExtState("MarkerWorkstation", CLOSE_REQUEST, "0", false)
+        saveWindowState()
+        return
+    end
+    
     reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_WindowPadding(), 10, 10)
     reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_ItemSpacing(), 6, 6)
     
@@ -748,6 +787,17 @@ local function main_loop()
                 reaper.ImGui_TextColored(ctx, COLORS.TEXT_DIM, "Drag functions from Layout tab to add them.")
             elseif #marker_functions == 0 then
                 reaper.ImGui_TextColored(ctx, COLORS.TEXT_DIM, "Add .lua files to MarkerFunctions directory")
+            else
+                local filter_info = {}
+                if not filter_state.show_markers then
+                    table.insert(filter_info, "Markers")
+                end
+                if not filter_state.show_regions then
+                    table.insert(filter_info, "Regions")
+                end
+                if #filter_info > 0 then
+                    reaper.ImGui_TextColored(ctx, COLORS.TEXT_DIM, string.format("Tip: Click M/R buttons to show %s", table.concat(filter_info, " and ")))
+                end
             end
         else
             -- Calculate button layout (adaptive to window width)
@@ -791,16 +841,23 @@ local function main_loop()
                 
                 for i, func in ipairs(filtered_funcs) do
                     -- Find actual index in marker_functions (not filtered)
+                    -- For custom actions, use a unique ID based on name
                     local actual_idx = nil
-                    for j, orig_func in ipairs(marker_functions) do
-                        if orig_func.name == func.name then
-                            actual_idx = j
-                            break
+                    if func.is_custom then
+                        -- For custom actions, use name as unique identifier
+                        actual_idx = "custom_" .. func.name
+                    else
+                        -- For builtin functions, find index in marker_functions
+                        for j, orig_func in ipairs(marker_functions) do
+                            if orig_func.name == func.name then
+                                actual_idx = j
+                                break
+                            end
                         end
                     end
                     
                     if actual_idx then
-                        reaper.ImGui_PushID(ctx, actual_idx)
+                        reaper.ImGui_PushID(ctx, tostring(actual_idx))
                         
                         -- Apply custom color if specified
                         if func.buttonColor then
@@ -945,6 +1002,24 @@ local function main_loop()
                         new_action.description = desc_value
                     end
                     
+                    -- Type selection (Marker/Region)
+                    reaper.ImGui_Text(ctx, "Type:")
+                    reaper.ImGui_SameLine(ctx)
+                    local type_options = {"marker", "region"}
+                    local current_type_idx = 1
+                    if new_action.type == "region" then
+                        current_type_idx = 2
+                    end
+                    if reaper.ImGui_BeginCombo(ctx, "##type_combo", type_options[current_type_idx]) then
+                        if reaper.ImGui_Selectable(ctx, "marker", new_action.type == "marker") then
+                            new_action.type = "marker"
+                        end
+                        if reaper.ImGui_Selectable(ctx, "region", new_action.type == "region") then
+                            new_action.type = "region"
+                        end
+                        reaper.ImGui_EndCombo(ctx)
+                    end
+                    
                     reaper.ImGui_TextColored(ctx, COLORS.TEXT_DIM, "Tip: Enter Action ID (number) or command name. Tooltip will show on hover.")
                     reaper.ImGui_Spacing(ctx)
                     
@@ -960,6 +1035,7 @@ local function main_loop()
                                     custom_actions[editing_index].name = new_action.name
                                     custom_actions[editing_index].action_id = tostring(action_id)
                                     custom_actions[editing_index].description = new_action.description or ""
+                                    custom_actions[editing_index].type = new_action.type or "marker"
                                     editing_index = nil
                                     status_message = "Updated custom action"
                                 else
@@ -967,7 +1043,8 @@ local function main_loop()
                                     table.insert(custom_actions, {
                                         name = new_action.name,
                                         action_id = tostring(action_id),
-                                        description = new_action.description or ""
+                                        description = new_action.description or "",
+                                        type = new_action.type or "marker"
                                     })
                                     -- Add to active functions automatically
                                     local already_added = false
@@ -980,13 +1057,16 @@ local function main_loop()
                                     if not already_added then
                                         table.insert(active_functions, new_action.name)
                                         saveLayout()
+                                        status_message = string.format("Added custom action: %s [%s]", new_action.name, (new_action.type or "marker"):upper())
+                                    else
+                                        status_message = string.format("Custom action '%s' already in UI", new_action.name)
                                     end
-                                    status_message = "Added custom action"
                                 end
                                 saveCustomActions()
                                 new_action.name = ""
                                 new_action.action_id = ""
                                 new_action.description = ""
+                                new_action.type = "marker"
                             else
                                 status_message = "Error: Invalid Action ID"
                             end
@@ -1003,6 +1083,7 @@ local function main_loop()
                             new_action.name = ""
                             new_action.action_id = ""
                             new_action.description = ""
+                            new_action.type = "marker"
                         end
                     end
                     
@@ -1016,7 +1097,14 @@ local function main_loop()
                     else
                         for i, action in ipairs(custom_actions) do
                             reaper.ImGui_PushID(ctx, i)
-                            reaper.ImGui_Text(ctx, string.format("%d. %s (ID: %s)", i, action.name, action.action_id))
+                            local action_type = action.type or "marker"
+                            local type_display = action_type == "region" and "[R]" or "[M]"
+                            local type_color = action_type == "region" and COLORS.BTN_REGION_ON or COLORS.BTN_MARKER_ON
+                            reaper.ImGui_Text(ctx, string.format("%d. %s", i, action.name))
+                            reaper.ImGui_SameLine(ctx)
+                            reaper.ImGui_TextColored(ctx, type_color, type_display)
+                            reaper.ImGui_SameLine(ctx)
+                            reaper.ImGui_Text(ctx, string.format("(ID: %s)", action.action_id))
                             if action.description and action.description ~= "" then
                                 reaper.ImGui_SameLine(ctx)
                                 reaper.ImGui_TextColored(ctx, COLORS.TEXT_DIM, " - " .. action.description)
@@ -1030,6 +1118,7 @@ local function main_loop()
                                 new_action.name = action.name
                                 new_action.action_id = action.action_id
                                 new_action.description = action.description or ""
+                                new_action.type = action.type or "marker"
                             end
                             reaper.ImGui_PopStyleColor(ctx, 3)
                             reaper.ImGui_SameLine(ctx)
@@ -1283,6 +1372,9 @@ local function main_loop()
         reaper.defer(main_loop)
     else
         saveWindowState()  -- Save one more time before exiting
+        -- Clear running flag when closing
+        reaper.SetExtState("MarkerWorkstation", SCRIPT_ID, "0", false)
+        reaper.SetExtState("MarkerWorkstation", CLOSE_REQUEST, "0", false)
         return
     end
 end
