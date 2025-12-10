@@ -1,0 +1,127 @@
+-- @description RadialMenu Tool - 入口脚本
+-- @author Lee
+-- @version 1.0.0
+-- @about
+--   轮盘菜单工具的主入口文件
+--   负责检查依赖和加载主模块
+
+-- ============================================================================
+-- 版本信息
+-- ============================================================================
+
+-- ============================================================================
+-- 版本信息（每次修改后更新 BUILD_NUMBER 以确认生效）
+-- ============================================================================
+local VERSION = "1.0.0"
+local BUILD_DATE = "2024-12-09"  -- 每次修改后更新此日期
+local BUILD_NUMBER = "001"  -- 每次修改后递增此数字（001, 002, 003...）
+
+-- ============================================================================
+-- Phase 1 - 依赖检查
+-- ============================================================================
+
+-- 检查 ReaImGui 是否已安装
+function check_dependencies()
+    -- 检查 ReaImGui 是否可用
+    if not reaper.ImGui_CreateContext then
+        reaper.ShowMessageBox(
+            "错误: 需要安装 ReaImGui 扩展！\n\n" ..
+            "请通过以下步骤安装:\n" ..
+            "1. 打开 Extensions > ReaPack > Browse Packages\n" ..
+            "2. 搜索 'ReaImGui'\n" ..
+            "3. 右键点击 'ReaImGui: ReaScript binding for Dear ImGui'\n" ..
+            "4. 选择 'Install'\n" ..
+            "5. 重启 REAPER",
+            "缺少依赖", 0
+        )
+        return false
+    end
+    
+    -- 检查 REAPER 版本（可选）
+    local reaper_version = tonumber(reaper.GetAppVersion():match("^(%d+%.%d+)"))
+    if reaper_version and reaper_version < 6.0 then
+        reaper.ShowMessageBox(
+            "警告: 建议使用 REAPER 6.0 或更高版本\n" ..
+            "当前版本: " .. reaper.GetAppVersion(),
+            "版本警告", 0
+        )
+    end
+    
+    return true
+end
+
+-- ============================================================================
+-- Phase 1 - 路径设置
+-- ============================================================================
+
+-- 设置模块搜索路径
+function setup_paths()
+    -- 获取脚本所在目录
+    local script_path = debug.getinfo(1, "S").source:match("@?(.*[\\/])") or ""
+    
+    -- 添加模块搜索路径
+    package.path = package.path .. ";" .. script_path .. "?.lua"
+    package.path = package.path .. ";" .. script_path .. "src/?.lua"
+    package.path = package.path .. ";" .. script_path .. "src/gui/?.lua"
+    package.path = package.path .. ";" .. script_path .. "src/logic/?.lua"
+    package.path = package.path .. ";" .. script_path .. "utils/?.lua"
+end
+
+-- ============================================================================
+-- Phase 1 - 加载主模块
+-- ============================================================================
+
+-- 主入口函数
+function main()
+    -- 检查依赖
+    if not check_dependencies() then
+        return
+    end
+    
+    -- 设置路径
+    setup_paths()
+    
+    -- 加载配置管理器（测试 Phase 1）
+    local success, config_manager = pcall(require, "config_manager")
+    if not success then
+        reaper.ShowMessageBox(
+            "错误: 无法加载配置管理器\n" .. tostring(config_manager),
+            "加载错误", 0
+        )
+        return
+    end
+    
+    -- 加载配置
+    local config = config_manager.load()
+    if not config then
+        reaper.ShowMessageBox("错误: 无法加载配置文件", "配置错误", 0)
+        return
+    end
+    
+    -- 加载主运行时
+    local success_runtime, main_runtime = pcall(require, "main_runtime")
+    if not success_runtime then
+        reaper.ShowMessageBox(
+            "错误: 无法加载主运行时\n" .. tostring(main_runtime),
+            "加载错误", 0
+        )
+        return
+    end
+    
+    -- 启动主运行时
+    main_runtime.run()
+end
+
+-- ============================================================================
+-- 执行入口
+-- ============================================================================
+
+-- 使用 pcall 捕获所有错误
+local success, error_msg = pcall(main)
+
+if not success then
+    reaper.ShowMessageBox(
+        "RadialMenu Tool 启动失败:\n\n" .. tostring(error_msg),
+        "错误", 0
+    )
+end
