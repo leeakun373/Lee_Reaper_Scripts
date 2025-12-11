@@ -1,23 +1,12 @@
--- @description RadialMenu Tool - 入口脚本
+-- @description RadialMenu Tool - 设置编辑器入口
 -- @author Lee
 -- @version 1.0.0
 -- @about
---   轮盘菜单工具的主入口文件
---   负责检查依赖和加载主模块
+--   轮盘菜单工具的设置编辑器入口
+--   独立于主运行脚本，专门用于编辑配置
 
 -- ============================================================================
--- 版本信息
--- ============================================================================
-
--- ============================================================================
--- 版本信息（每次修改后更新 BUILD_NUMBER 以确认生效）
--- ============================================================================
-local VERSION = "1.0.0"
-local BUILD_DATE = "2024-12-09"  -- 每次修改后更新此日期
-local BUILD_NUMBER = "001"  -- 每次修改后递增此数字（001, 002, 003...）
-
--- ============================================================================
--- Phase 1 - 依赖检查
+-- 依赖检查
 -- ============================================================================
 
 -- 检查 ReaImGui 是否已安装
@@ -37,21 +26,11 @@ function check_dependencies()
         return false
     end
     
-    -- 检查 REAPER 版本（可选）
-    local reaper_version = tonumber(reaper.GetAppVersion():match("^(%d+%.%d+)"))
-    if reaper_version and reaper_version < 6.0 then
-        reaper.ShowMessageBox(
-            "警告: 建议使用 REAPER 6.0 或更高版本\n" ..
-            "当前版本: " .. reaper.GetAppVersion(),
-            "版本警告", 0
-        )
-    end
-    
     return true
 end
 
 -- ============================================================================
--- Phase 1 - 路径设置
+-- 路径设置
 -- ============================================================================
 
 -- 设置模块搜索路径
@@ -68,10 +47,9 @@ function setup_paths()
 end
 
 -- ============================================================================
--- Phase 1 - 加载主模块
+-- 主入口函数
 -- ============================================================================
 
--- 主入口函数
 function main()
     -- 检查依赖
     if not check_dependencies() then
@@ -81,35 +59,18 @@ function main()
     -- 设置路径
     setup_paths()
     
-    -- 加载配置管理器（测试 Phase 1）
-    local success, config_manager = pcall(require, "config_manager")
+    -- 加载设置编辑器模块
+    local success, main_settings = pcall(require, "main_settings")
     if not success then
         reaper.ShowMessageBox(
-            "错误: 无法加载配置管理器\n" .. tostring(config_manager),
+            "错误: 无法加载设置编辑器\n" .. tostring(main_settings),
             "加载错误", 0
         )
         return
     end
     
-    -- 加载配置
-    local config = config_manager.load()
-    if not config then
-        reaper.ShowMessageBox("错误: 无法加载配置文件", "配置错误", 0)
-        return
-    end
-    
-    -- 加载主运行时
-    local success_runtime, main_runtime = pcall(require, "main_runtime")
-    if not success_runtime then
-        reaper.ShowMessageBox(
-            "错误: 无法加载主运行时\n" .. tostring(main_runtime),
-            "加载错误", 0
-        )
-        return
-    end
-    
-    -- 启动主运行时
-    main_runtime.run()
+    -- 启动设置编辑器
+    main_settings.show()
 end
 
 -- ============================================================================
@@ -121,7 +82,8 @@ local success, error_msg = pcall(main)
 
 if not success then
     reaper.ShowMessageBox(
-        "RadialMenu Tool 启动失败:\n\n" .. tostring(error_msg),
+        "RadialMenu Tool 设置编辑器启动失败:\n\n" .. tostring(error_msg),
         "错误", 0
     )
 end
+

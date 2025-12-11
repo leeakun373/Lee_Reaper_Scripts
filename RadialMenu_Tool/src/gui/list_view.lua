@@ -9,6 +9,7 @@ local M = {}
 local actions = require("actions")
 local styles = require("styles")
 local math_utils = require("math_utils")
+local execution = require("execution")
 
 -- ============================================================================
 -- 配置常量 (3x3 紧凑布局)
@@ -27,13 +28,24 @@ local SUBMENU_HEIGHT = (SLOT_HEIGHT * GRID_ROWS) + (GAP * (GRID_ROWS - 1)) + (WI
 
 -- 列表视图状态
 local current_sector = nil
+local dragging_slot = nil  -- 当前正在拖拽的插槽
+local drag_start_pos = nil  -- 拖拽开始位置（用于判断是否真的在拖拽）
+
+-- 导出拖拽状态（供主运行时使用）
+function M.is_dragging()
+    return dragging_slot ~= nil
+end
+
+function M.get_dragging_slot()
+    return dragging_slot
+end
 
 -- ============================================================================
 -- Phase 3 - 绘制子菜单 (主入口)
 -- ============================================================================
 
 function M.draw_submenu(ctx, sector_data, center_x, center_y)
-    if not sector_data then return end
+    if not sector_data then return false end  -- Return false if no sector data
     
     current_sector = sector_data
     
@@ -60,13 +72,44 @@ function M.draw_submenu(ctx, sector_data, center_x, center_y)
     reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_WindowRounding(), 8)
     reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_WindowBorderSize(), 1)
 
+    -- Flag to track if submenu is hovered
+    local is_submenu_hovered = false
+
     if reaper.ImGui_Begin(ctx, "##Submenu_" .. sector_data.id, true, reaper.ImGui_WindowFlags_NoDecoration() | reaper.ImGui_WindowFlags_NoMove()) then
+        -- [FIX] Check if this window is hovered (including items inside it)
+        -- Try to use ChildWindows flag if available (includes child windows in hover detection)
+        if reaper.ImGui_HoveredFlags_ChildWindows then
+            is_submenu_hovered = reaper.ImGui_IsWindowHovered(ctx, reaper.ImGui_HoveredFlags_ChildWindows())
+        else
+            -- Fallback: check without flags if the API doesn't support it
+            is_submenu_hovered = reaper.ImGui_IsWindowHovered(ctx)
+            
+            -- Additional check: verify mouse is within window bounds
+            if is_submenu_hovered then
+                local mouse_x, mouse_y = reaper.ImGui_GetMousePos(ctx)
+                local win_x, win_y = reaper.ImGui_GetWindowPos(ctx)
+                local win_w, win_h = reaper.ImGui_GetWindowSize(ctx)
+                
+                -- Double-check mouse is actually in window bounds
+                if not (mouse_x >= win_x and mouse_x <= win_x + win_w and
+                       mouse_y >= win_y and mouse_y <= win_y + win_h) then
+                    is_submenu_hovered = false
+                end
+            end
+        end
+        
         M.draw_grid_buttons(ctx, sector_data)
+        
+        -- 处理拖拽视觉反馈和放置检测
+        M.handle_drag_and_drop(ctx)
+        
         reaper.ImGui_End(ctx)
     end
     
     reaper.ImGui_PopStyleVar(ctx, 4)
     reaper.ImGui_PopStyleColor(ctx, 2)
+    
+    return is_submenu_hovered
 end
 
 -- ============================================================================
@@ -129,15 +172,35 @@ function M.draw_single_button(ctx, slot, index)
     reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FrameRounding(), 4)
     reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FrameBorderSize(), 1) -- 关键：开启按钮描边
     
+    -- 检测拖拽开始
+    if slot and reaper.ImGui_IsItemActive(ctx) and reaper.ImGui_IsMouseDragging(ctx, 0) then
+        -- 检查是否真的在拖拽（移动距离超过阈值）
+        local mouse_delta_x, mouse_delta_y = reaper.ImGui_GetMouseDelta(ctx, 0)
+        local drag_distance = math.sqrt(mouse_delta_x * mouse_delta_x + mouse_delta_y * mouse_delta_y)
+        
+        if drag_distance > 5 then  -- 5 像素阈值，避免误触发
+            if not dragging_slot or dragging_slot ~= slot then
+                -- 静默模式：不输出日志
+                dragging_slot = slot
+                local mouse_x, mouse_y = reaper.ImGui_GetMousePos(ctx)
+                drag_start_pos = {x = mouse_x, y = mouse_y}
+            end
+        end
+    end
+    
+    -- 按钮点击（仅在未拖拽时触发）
     if reaper.ImGui_Button(ctx, label .. "##Slot" .. index, SLOT_WIDTH, SLOT_HEIGHT) then
-        if slot then M.handle_item_click(slot) end
+        -- 只有在没有拖拽的情况下才触发点击
+        if slot and not dragging_slot then
+            M.handle_item_click(slot)
+        end
     end
     
     reaper.ImGui_PopStyleVar(ctx, 2)
     reaper.ImGui_PopStyleColor(ctx, 5)
     
-    -- Tooltip
-    if slot and reaper.ImGui_IsItemHovered(ctx) then
+    -- Tooltip（仅在未拖拽时显示）
+    if slot and reaper.ImGui_IsItemHovered(ctx) and not dragging_slot then
         local tooltip = slot.description
         if not tooltip or tooltip == "" then tooltip = slot.name end
         if tooltip and tooltip ~= "" then
@@ -188,20 +251,121 @@ end
 -- ============================================================================
 
 function M.handle_item_click(slot)
-    if not slot then return end
-    
-    if slot.type == "action" and slot.data and slot.data.command_id then
-        actions.execute_command(slot.data.command_id)
-    elseif slot.type == "fx" and slot.data and slot.data.fx_name then
-        local fx_engine = require("fx_engine")
-        fx_engine.smart_add_fx(slot.data.fx_name)
-    elseif slot.type == "script" and slot.data and slot.data.script_path then
-        actions.execute_script(slot.data.script_path)
+    if not slot then 
+        -- 静默模式：不输出日志
+        return false 
     end
+    
+    -- 静默模式：不输出日志
+    
+    -- 使用统一的执行引擎
+    execution.trigger_slot(slot)
+    
+    -- 不再自动关闭子菜单，让用户手动关闭
+    -- 用户可以通过点击扇区或 ESC 键关闭
+    
+    return true
 end
 
 function M.get_current_sector()
     return current_sector
+end
+
+-- ============================================================================
+-- 拖拽和放置处理
+-- ============================================================================
+
+-- 处理拖拽视觉反馈和放置检测
+-- 注意：鼠标释放检测现在在主运行时中处理，因为鼠标可能移出子菜单窗口
+function M.handle_drag_and_drop(ctx)
+    -- 拖拽状态由主运行时统一管理
+    -- 这里只负责在子菜单窗口内检测拖拽开始
+end
+
+-- 重置拖拽状态（由主运行时调用）
+function M.reset_drag()
+    dragging_slot = nil
+    drag_start_pos = nil
+end
+
+-- 绘制拖拽视觉反馈 (使用 Tooltip 防止被窗口裁切)
+-- @param draw_list ImDrawList*: 主窗口的绘制列表（不再使用，保留参数以兼容）
+-- @param ctx ImGui context: ImGui 上下文
+-- @param slot table: 正在拖拽的插槽
+function M.draw_drag_feedback(draw_list, ctx, slot)
+    if not slot then return end
+    
+    -- Tooltip 默认会自动跟随鼠标，但我们可以强制位置以确保不遮挡视线
+    -- 注意：BeginTooltip 自动处理位置，通常不需要 SetNextWindowPos，除非你想自定义偏移
+    -- 这里我们依赖 ImGui 的默认行为，它通常很聪明
+    
+    -- 设置样式以匹配我们的深色主题
+    local bg_color = styles.correct_rgba_to_u32({20, 20, 22, 240})
+    local border_color = styles.correct_rgba_to_u32(styles.colors.sector_active_out)
+    local text_color = styles.correct_rgba_to_u32(styles.colors.text_normal)
+    
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_PopupBg(), bg_color)
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Border(), border_color)
+    reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Text(), text_color)
+    reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_WindowBorderSize(), 1)
+    reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_WindowRounding(), 4)
+    
+    -- 使用 BeginTooltip 创建一个独立悬浮窗口
+    if reaper.ImGui_BeginTooltip(ctx) then
+        -- 显示图标或类型前缀
+        local prefix = "[?]"
+        if slot.type == "action" then 
+            prefix = "[Action]"
+        elseif slot.type == "fx" then 
+            prefix = "[FX]"
+        elseif slot.type == "chain" then 
+            prefix = "[Chain]" 
+        elseif slot.type == "template" then 
+            prefix = "[Template]" 
+        end
+        
+        reaper.ImGui_Text(ctx, prefix .. " " .. (slot.name or "Unknown"))
+        
+        -- 如果是 Action，显示 ID
+        if slot.type == "action" then
+            local id = (slot.data and slot.data.command_id) or slot.command_id
+            if id then 
+                reaper.ImGui_TextDisabled(ctx, "ID: " .. tostring(id)) 
+            end
+        end
+        
+        reaper.ImGui_EndTooltip(ctx)
+    end
+    
+    reaper.ImGui_PopStyleVar(ctx, 2)
+    reaper.ImGui_PopStyleColor(ctx, 3)
+end
+
+-- 将 ImGui 坐标转换为屏幕坐标
+-- @param ctx ImGui context
+-- @param imgui_x number: ImGui X 坐标
+-- @param imgui_y number: ImGui Y 坐标
+-- @return number, number: 屏幕 X, Y 坐标
+-- 
+-- NOTE: This function is currently not used. Mouse release detection is handled
+-- in main_runtime.lua using reaper.GetMousePosition() directly, which provides
+-- the correct global screen coordinates needed for GetThingFromPoint.
+function M.imgui_to_screen_coords(ctx, imgui_x, imgui_y)
+    -- [DEPRECATED] This function is kept for reference but not actively used.
+    -- The main_runtime.lua uses reaper.GetMousePosition() directly which is
+    -- the correct approach for GetThingFromPoint.
+    
+    -- GetThingFromPoint requires global screen coordinates, not ImGui window-relative coordinates.
+    -- reaper.GetMousePosition() returns the correct global screen coordinates.
+    
+    local screen_x, screen_y = reaper.GetMousePosition()
+    
+    if screen_x and screen_y then
+        return screen_x, screen_y
+    end
+    
+    -- Fallback: Use ImGui coordinates (may not be correct for GetThingFromPoint)
+    return imgui_x, imgui_y
 end
 
 return M

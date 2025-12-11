@@ -12,6 +12,7 @@ local wheel = require("wheel")
 local list_view = require("list_view")
 local styles = require("styles")
 local math_utils = require("math_utils")
+local execution = require("execution")
 
 -- 运行时状态
 local ctx = nil
@@ -22,6 +23,8 @@ local window_height = 500
 local clicked_sector = nil
 local show_submenu = false
 local is_pinned = false
+-- 拖拽跟踪（用于区分点击和拖拽）
+local center_drag_started = false
 
 -- 窗口定位辅助
 local is_first_display = true
@@ -30,6 +33,9 @@ local is_first_display = true
 local SCRIPT_START_TIME = nil
 local KEY = nil
 local KEY_START_STATE = nil
+
+-- 配置热重载跟踪
+local last_config_update_time = nil
 
 -- ============================================================================
 -- Phase 2 - 初始化
@@ -66,6 +72,8 @@ function M.init()
     ctx = reaper.ImGui_CreateContext("RadialMenu_Wheel", reaper.ImGui_ConfigFlags_None())
     config = config_manager.load()
     styles.init_from_config(config)
+    
+    -- 静默模式：不打开控制台，不输出启动消息
     
     -- 窗口大小与轮盘一致，只留少量边距（子菜单作为独立窗口显示）
     local diameter = config.menu.outer_radius * 2 + 20  -- 只留 10 像素边距（每边）
@@ -110,12 +118,15 @@ local function KeyHeld()
     return key_state:byte(KEY) == 1
 end
 
--- 跟踪快捷键状态，如果松开则关闭窗口
+-- 跟踪快捷键状态，如果松开则关闭窗口（除非已 Pin 住）
 local function TrackShortcutKey()
     if not KeyHeld() then
-        -- 按键已松开，关闭窗口
-        M.cleanup()
-        return false
+        -- 按键已松开，但如果已 Pin 住，则不关闭窗口
+        if not is_pinned then
+            M.cleanup()
+            return false
+        end
+        -- 如果已 Pin 住，继续运行
     end
     return true
 end
@@ -127,15 +138,40 @@ end
 function M.loop()
     if not ctx then return end
     
+    -- [核心] 配置热重载检测
+    local current_update_time = reaper.GetExtState("RadialMenu", "ConfigUpdated")
+    if current_update_time and current_update_time ~= "" then
+        if last_config_update_time == nil then
+            -- 首次运行，初始化时间戳
+            last_config_update_time = current_update_time
+        elseif last_config_update_time ~= current_update_time then
+            -- 配置已更新，重新加载
+            config = config_manager.load()
+            if config then
+                styles.init_from_config(config)
+                -- 更新窗口尺寸（如果配置中的尺寸改变了）
+                local diameter = config.menu.outer_radius * 2 + 20
+                window_width = diameter
+                window_height = diameter
+            end
+            last_config_update_time = current_update_time
+        end
+    end
+    
     -- [核心] 长按模式：检测按键是否仍然被按住
     if not TrackShortcutKey() then
         return
     end
     
-    -- ESC 键关闭窗口（使用 ImGui 原生检测）
+    -- ESC 键关闭窗口（使用 ImGui 原生检测，除非已 Pin 住）
     if reaper.ImGui_IsKeyPressed(ctx, reaper.ImGui_Key_Escape()) then 
-        M.cleanup()
-        return
+        if not is_pinned then
+            M.cleanup()
+            return
+        end
+        -- 如果已 Pin 住，ESC 键不关闭窗口，只关闭子菜单
+        show_submenu = false
+        clicked_sector = nil
     end
     
     -- ============================================================
@@ -252,14 +288,10 @@ function M.draw()
     -- 只有按住这个区域，才会被 ImGui 视为"在窗口内有效点击"
     reaper.ImGui_InvisibleButton(ctx, "##DragHandle", inner_radius * 2, inner_radius * 2)
     
-    -- 双击切换 Pin
-    if reaper.ImGui_IsItemHovered(ctx) and reaper.ImGui_IsMouseDoubleClicked(ctx, 0) then
-        is_pinned = not is_pinned
-    end
-    
     -- 拖拽逻辑 (优化版)
     -- 利用 IsItemActive (按下并保持) 来驱动移动
     if reaper.ImGui_IsItemActive(ctx) and reaper.ImGui_IsMouseDragging(ctx, 0) then
+        center_drag_started = true
         local dx, dy = reaper.ImGui_GetMouseDelta(ctx, 0)
         local new_x = win_x + dx
         local new_y = win_y + dy
@@ -293,6 +325,18 @@ function M.draw()
         end
     end
     
+    -- 点击切换 Pin（仅在未发生拖拽时）
+    -- 检测鼠标释放：如果点击了中心区域且没有拖拽，则切换 Pin 状态
+    if reaper.ImGui_IsItemDeactivated(ctx) and not center_drag_started then
+        -- 鼠标释放且没有发生拖拽，切换 Pin 状态
+        is_pinned = not is_pinned
+    end
+    
+    -- 重置拖拽状态（如果鼠标已释放）
+    if not reaper.ImGui_IsItemActive(ctx) then
+        center_drag_started = false
+    end
+    
     -- 设置鼠标指针 (悬停在中心时显示移动图标)
     if reaper.ImGui_IsItemHovered(ctx) then
         -- 检查是否有 ResizeAll 光标常量，如果没有则使用默认
@@ -302,22 +346,77 @@ function M.draw()
     end
 
     -- ============================================================
-    -- 3. 扇区点击逻辑 (Hit Test)
+    -- 3. 悬停打开子菜单逻辑 (Hover to Open)
     -- ============================================================
-    -- 我们需要手动检测扇区点击，因为扇区是画出来的，不是真实的 Button
-    M.handle_sector_click(center_x, center_y, inner_radius, outer_radius)
+    -- [New Hover Logic]
+    local hovered_id = wheel.get_hovered_sector_id()
     
+    -- [FIX] Added check: `and not list_view.is_dragging()`
+    -- Prevents switching sectors while the user is dragging an item
+    if config.menu.hover_to_open and hovered_id and not list_view.is_dragging() then
+        -- Only trigger if we are hovering a NEW sector (prevent flickering/toggling)
+        if not clicked_sector or clicked_sector.id ~= hovered_id then
+            local sector = config_manager.get_sector_by_id(config, hovered_id)
+            if sector then
+                clicked_sector = sector
+                show_submenu = true
+            end
+        end
+    end
+
     -- ============================================================
-    -- 4. 绘制子菜单
+    -- 4. 绘制子菜单（先绘制以获取悬停状态）
     -- ============================================================
     -- 子菜单作为独立的 Window 绘制，或者作为当前 Window 的内容
     -- 为了避免坐标系混乱，我们在当前 DrawList 上绘制，或者使用 BeginChild
+    
+    -- 子菜单悬停状态（用于防止自动关闭）
+    local is_submenu_hovered = false
     
     if show_submenu and clicked_sector then
         -- list_view.draw_submenu 内部使用了 SetNextWindowPos + Begin
         -- 这意味着子菜单是一个独立的 ImGui 窗口，这很好！
         -- 独立窗口不会被主窗口的透明区域遮挡问题影响
-        list_view.draw_submenu(ctx, clicked_sector, center_x, center_y)
+        -- 现在返回悬停状态，以便主运行时知道用户正在与子菜单交互
+        is_submenu_hovered = list_view.draw_submenu(ctx, clicked_sector, center_x, center_y)
+    end
+    
+    -- ============================================================
+    -- 5. 扇区点击逻辑 (Hit Test)
+    -- ============================================================
+    -- 我们需要手动检测扇区点击，因为扇区是画出来的，不是真实的 Button
+    -- 传递悬停状态，防止点击子菜单时关闭它
+    M.handle_sector_click(center_x, center_y, inner_radius, outer_radius, is_submenu_hovered)
+    
+    -- ============================================================
+    -- 6. 绘制拖拽视觉反馈和处理放置（在主窗口上）
+    -- ============================================================
+    if list_view.is_dragging() then
+        local draw_list = reaper.ImGui_GetWindowDrawList(ctx)
+        local dragging_slot = list_view.get_dragging_slot()
+        
+        -- 绘制拖拽视觉反馈
+        if draw_list and dragging_slot then
+            list_view.draw_drag_feedback(draw_list, ctx, dragging_slot)
+        end
+        
+        -- 检查鼠标是否释放（在主窗口中检测，因为鼠标可能移出子菜单窗口）
+        if not reaper.ImGui_IsMouseDown(ctx, 0) then
+            -- 静默模式：不输出日志
+            
+            -- 鼠标已释放，执行放置操作
+            
+            -- [CRITICAL]: Use reaper.GetMousePosition() for Screen Coordinates
+            -- Do NOT use ImGui.GetMousePos() here because GetThingFromPoint needs global screen coords.
+            local screen_x, screen_y = reaper.GetMousePosition()
+            
+            if screen_x and screen_y then
+                execution.handle_drop(dragging_slot, screen_x, screen_y)
+            end
+            
+            -- 重置拖拽状态
+            list_view.reset_drag()
+        end
     end
     
     reaper.ImGui_PopStyleVar(ctx)
@@ -327,7 +426,7 @@ end
 -- 输入处理逻辑
 -- ============================================================================
 
-function M.handle_sector_click(center_x, center_y, inner_radius, outer_radius)
+function M.handle_sector_click(center_x, center_y, inner_radius, outer_radius, is_submenu_hovered)
     -- 获取鼠标位置
     local mouse_x, mouse_y = reaper.ImGui_GetMousePos(ctx)
     local win_x, win_y = reaper.ImGui_GetWindowPos(ctx)
@@ -359,17 +458,10 @@ function M.handle_sector_click(center_x, center_y, inner_radius, outer_radius)
     elseif distance > outer_radius then
         -- [核心] 解决大框遮挡问题：
         -- 如果鼠标在轮盘外部，点击时我们希望穿透下去。
-        -- 简单的做法：检测点击是否发生在空白处
+        -- [FIX] Only close if clicked AND NOT hovering the submenu
         if reaper.ImGui_IsMouseClicked(ctx, 0) then
-            -- 如果点击了外部，关闭子菜单
-            if show_submenu then
-                -- 这里要做个判断：如果点击的是子菜单窗口范围，就不要关
-                -- 但因为子菜单是独立 Window，Reaper 会优先处理它
-                -- 所以这里只需简单的关闭逻辑
-                -- 检查是否有其他窗口被悬停（比如子菜单）
-                local any_window_hovered = false
-                -- 注意：ReaImGui 可能没有 IsWindowHovered 的 AnyWindow 标志
-                -- 这里简化处理，直接关闭子菜单
+            if show_submenu and not is_submenu_hovered then
+                -- 点击了外部且没有悬停在子菜单上，关闭子菜单
                 show_submenu = false
                 clicked_sector = nil
             end

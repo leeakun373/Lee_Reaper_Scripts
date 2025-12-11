@@ -33,12 +33,13 @@ function M.get_default()
         
         -- 菜单外观设置
         menu = {
-            outer_radius = 200,           -- 轮盘外半径
-            inner_radius = 50,            -- 中心圆半径（死区）
+            outer_radius = 110,           -- 轮盘外半径
+            inner_radius = 30,            -- 中心圆半径（死区）
             sector_border_width = 2,      -- 扇区边框宽度
             hover_brightness = 1.3,       -- 悬停时亮度增加倍数
             animation_speed = 0.2,        -- 动画速度
-            max_slots_per_sector = 12     -- 每个扇区最大槽位数
+            max_slots_per_sector = 9,     -- 每个扇区最大槽位数
+            hover_to_open = false         -- 悬停打开子菜单（false = 点击打开）
         },
         
         -- 颜色配置（RGBA格式，0-255）
@@ -165,6 +166,9 @@ function M.save(config)
         reaper.ShowMessageBox("配置保存失败: " .. (err or "未知错误"), "错误", 0)
         return false
     end
+    
+    -- 发出配置更新信号，通知运行中的轮盘重新加载配置
+    reaper.SetExtState("RadialMenu", "ConfigUpdated", tostring(os.time()), false)
     
     -- reaper.ShowConsoleMsg("配置文件已保存: " .. config_path .. "\n")
     return true
@@ -318,7 +322,7 @@ function M.add_slot_to_sector(config, sector_id, slot)
     end
     
     -- 检查槽位数量限制
-    local max_slots = config.menu.max_slots_per_sector or 12
+    local max_slots = config.menu.max_slots_per_sector or 9
     if #sector.slots >= max_slots then
         return false, "扇区槽位已满"
     end

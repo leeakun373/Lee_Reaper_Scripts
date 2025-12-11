@@ -18,18 +18,23 @@ local max_history = 20
 function M.execute_command(command_id)
     -- 验证 command_id
     if not command_id then
-        -- reaper.ShowConsoleMsg("错误: command_id 为空\n")
+        reaper.ShowConsoleMsg("RadialMenu: 错误: command_id 为空\n")
         return false
     end
     
     -- 转换为数字
     local cmd_id = tonumber(command_id)
     if not cmd_id then
-        -- reaper.ShowConsoleMsg("错误: command_id 必须是数字: " .. tostring(command_id) .. "\n")
+        reaper.ShowConsoleMsg("RadialMenu: 错误: command_id 必须是数字: " .. tostring(command_id) .. "\n")
         return false
     end
     
-    -- 执行命令
+    if cmd_id <= 0 then
+        reaper.ShowConsoleMsg("RadialMenu: 错误: command_id 必须大于 0: " .. tostring(cmd_id) .. "\n")
+        return false
+    end
+    
+    -- 执行命令（直接执行，不使用 defer）
     reaper.Main_OnCommand(cmd_id, 0)
     
     -- 记录日志
@@ -37,6 +42,8 @@ function M.execute_command(command_id)
     
     -- 添加到历史
     M.add_to_history(cmd_id, true)
+    
+    reaper.ShowConsoleMsg("RadialMenu: 执行命令: " .. tostring(cmd_id) .. "\n")
     
     return true
 end

@@ -15,6 +15,7 @@ local styles = require("styles")
 local wheel = require("wheel")
 local math_utils = require("math_utils")
 local im_utils = require("im_utils")
+local utils_fx = require("utils_fx")
 
 -- ============================================================================
 -- 设置界面状态
@@ -27,6 +28,21 @@ local is_open = false
 local is_modified = false
 local selected_sector_index = nil  -- 当前选中的扇区索引（1-based）
 local preview_config = nil  -- 缓存的预览配置（避免每次绘制都深拷贝）
+
+-- 新增状态变量
+local actions_cache = nil  -- Action 列表缓存
+local actions_filtered = {}  -- 过滤后的 Action 列表
+local action_search_text = ""  -- Action 搜索文本
+local browser_tab = 0  -- 浏览器标签页 (0=Actions, 1=FX)
+local fx_list = {}  -- FX 列表（简单实现）
+local fx_search_text = ""  -- FX 搜索文本
+local current_fx_filter = "All"  -- 当前 FX 过滤器 (All, VST, VST3, JS, AU, CLAP, LV2, Chain, Template)
+local fx_list_clipper = nil  -- FX ListClipper 缓存
+local context_menu_slot_index = nil  -- 右键菜单的插槽索引
+local context_menu_sector_index = nil  -- 右键菜单的扇区索引
+local selected_slot_index = nil  -- 当前选中的插槽索引（用于属性栏编辑）
+local action_list_clipper = nil  -- ListClipper 缓存（使用 ValidatePtr 验证有效性）
+local save_feedback_time = 0  -- 保存反馈时间戳（用于显示保存成功消息）
 
 -- ============================================================================
 -- Phase 4 - 初始化
@@ -85,6 +101,10 @@ function M.init()
     is_open = true
     is_modified = false
     selected_sector_index = nil
+    
+    -- 初始化 Action 缓存和过滤列表
+    M.load_actions()
+    actions_filtered = M.filter_actions("")
     
     -- 标记设置窗口已打开
     reaper.SetExtState("RadialMenu", "SettingsOpen", "1", false)
@@ -182,7 +202,7 @@ function M.draw()
     local color_count, style_var_count = M.apply_theme()
     
     -- 设置窗口大小和位置
-    reaper.ImGui_SetNextWindowSize(ctx, 1000, 700, reaper.ImGui_Cond_FirstUseEver())
+    reaper.ImGui_SetNextWindowSize(ctx, 1400, 800, reaper.ImGui_Cond_FirstUseEver())
     
     -- 开始窗口
     local visible, open = reaper.ImGui_Begin(ctx, "RadialMenu 设置编辑器", true, reaper.ImGui_WindowFlags_None())
@@ -202,7 +222,7 @@ function M.draw()
         return
     end
     
-    -- 绘制标题（参考Markers Modern主题风格）
+    -- 绘制标题
     local TEXT_NORMAL = 0xE4E4E7FF  -- 锌白 (#E4E4E7)
     local TEXT_DIM = 0xA1A1AAFF  -- 灰字 (#A1A1AA)
     reaper.ImGui_TextColored(ctx, TEXT_NORMAL, "RadialMenu 设置编辑器")
@@ -212,13 +232,13 @@ function M.draw()
     reaper.ImGui_Separator(ctx)
     reaper.ImGui_Spacing(ctx)
     
-    -- 绘制底部操作栏（在内容之前，使用 SameLine 布局）
+    -- 绘制底部操作栏
     M.draw_action_bar()
     
     reaper.ImGui_Separator(ctx)
     reaper.ImGui_Spacing(ctx)
     
-    -- 使用表格创建 2 列布局
+    -- 使用表格创建 2 列布局（分割视图）
     if reaper.ImGui_BeginTable(ctx, "##MainLayout", 2, 
         reaper.ImGui_TableFlags_Resizable() | reaper.ImGui_TableFlags_BordersInnerV(), -1, -1) then
         
@@ -226,12 +246,15 @@ function M.draw()
         reaper.ImGui_TableNextColumn(ctx)
         M.draw_preview_panel()
         
-        -- 右侧列：编辑器面板
+        -- 右侧列：编辑器面板（分为上下两部分）
         reaper.ImGui_TableNextColumn(ctx)
-        M.draw_editor_panel()
+        M.draw_editor_panel_split()
         
         reaper.ImGui_EndTable(ctx)
     end
+    
+    -- 处理右键菜单
+    M.handle_context_menu()
     
     reaper.ImGui_End(ctx)
     
@@ -245,58 +268,32 @@ end
 
 -- 绘制预览面板
 function M.draw_preview_panel()
-    reaper.ImGui_Text(ctx, "实时预览")
-    reaper.ImGui_Separator(ctx)
-    reaper.ImGui_Spacing(ctx)
-    
-    -- 创建预览区域（使用 Child 窗口）
-    local preview_size = 350
-    if reaper.ImGui_BeginChild(ctx, "##PreviewArea", preview_size, preview_size, 1, 
-        reaper.ImGui_WindowFlags_None()) then
+    -- ============================================================
+    -- 1. Compact Preview Area (Fixed Height: 220px)
+    -- ============================================================
+    if reaper.ImGui_BeginChild(ctx, "PreviewFrame", 0, 220, 1, reaper.ImGui_WindowFlags_None()) then
+        local w, h = reaper.ImGui_GetContentRegionAvail(ctx)
+        local px, py = reaper.ImGui_GetCursorScreenPos(ctx)
+        local center_x = px + w / 2
+        local center_y = py + h / 2
         
-        -- 获取预览区域的中心点（Child窗口）
-        -- 注意：在Child窗口内，需要使用Child窗口的坐标系统
-        local preview_w, preview_h = reaper.ImGui_GetWindowSize(ctx)
-        local preview_center_x_local = preview_w / 2
-        local preview_center_y_local = preview_h / 2
+        -- Create a scaled-down config for visualization only
+        local vis_config = M.deep_copy_config(config)
+        vis_config.menu.outer_radius = 80  -- Fixed visual size
+        vis_config.menu.inner_radius = 25
         
-        -- 获取Child窗口的屏幕坐标（用于鼠标检测）
-        local preview_x, preview_y = reaper.ImGui_GetWindowPos(ctx)
-        local preview_center_x_screen = preview_x + preview_center_x_local
-        local preview_center_y_screen = preview_y + preview_center_y_local
-        
-        -- 创建或更新预览配置（每次绘制都更新，确保预览与配置同步）
-        -- 使用浅拷贝避免深拷贝的性能问题
-        preview_config = {
-            version = config.version,
-            menu = {
-                outer_radius = 120,  -- 较小的预览尺寸
-                inner_radius = 30,
-                sector_border_width = config.menu.sector_border_width or 2,
-                hover_brightness = config.menu.hover_brightness or 1.3,
-                animation_speed = config.menu.animation_speed or 0.2,
-                max_slots_per_sector = config.menu.max_slots_per_sector or 12
-            },
-            colors = config.colors,
-            sectors = config.sectors  -- 直接引用，不需要深拷贝
-        }
-        
-        -- 绘制轮盘预览（使用简化的绘制，避免 wheel.draw_wheel 的交互检测导致卡死）
+        -- Draw preview
         local draw_list = reaper.ImGui_GetWindowDrawList(ctx)
-        local center_x = preview_x + preview_center_x_local
-        local center_y = preview_y + preview_center_y_local
-        
-        -- 简化预览：只绘制扇区，不进行悬停检测
-        M.draw_simple_preview(draw_list, ctx, center_x, center_y, preview_config, selected_sector_index)
+        M.draw_simple_preview(draw_list, ctx, center_x, center_y, vis_config, selected_sector_index)
         
         -- 检测预览区域的鼠标点击，选择扇区
         if reaper.ImGui_IsWindowHovered(ctx) and reaper.ImGui_IsMouseClicked(ctx, 0) then
             local mouse_x, mouse_y = reaper.ImGui_GetMousePos(ctx)
-            local relative_x = mouse_x - preview_center_x_screen
-            local relative_y = mouse_y - preview_center_y_screen
+            local relative_x = mouse_x - center_x
+            local relative_y = mouse_y - center_y
             local distance = math_utils.distance(relative_x, relative_y, 0, 0)
-            local inner_radius = preview_config.menu.inner_radius
-            local outer_radius = preview_config.menu.outer_radius
+            local inner_radius = vis_config.menu.inner_radius
+            local outer_radius = vis_config.menu.outer_radius
             
             -- 如果点击在轮盘区域内（排除中心圆）
             if distance > inner_radius and distance <= outer_radius then
@@ -306,66 +303,160 @@ function M.draw_preview_panel()
                 local sector_index = math_utils.angle_to_sector_index(angle, #config.sectors, rotation_offset)
                 
                 if sector_index >= 1 and sector_index <= #config.sectors then
+                    -- 切换扇区时清除选中的插槽
+                    if selected_sector_index ~= sector_index then
+                        selected_slot_index = nil
+                    end
                     selected_sector_index = sector_index
-                    -- reaper.ShowConsoleMsg("选择扇区: " .. sector_index .. "\n")
                 end
             end
+        end
+        
+        -- [NEW] 精致的"清除扇区"悬浮按钮（仅在选中扇区时显示，位于预览图右下角）
+        if selected_sector_index and selected_sector_index >= 1 and selected_sector_index <= #config.sectors then
+            local btn_size = 24  -- 小按钮尺寸
+            local btn_padding = 8  -- 距离边缘的间距
+            local btn_x = px + w - btn_size - btn_padding
+            local btn_y = py + h - btn_size - btn_padding
+            
+            -- 设置按钮位置
+            reaper.ImGui_SetCursorScreenPos(ctx, btn_x, btn_y)
+            
+            -- 精致的按钮样式（半透明，悬停时变亮）
+            local btn_bg = im_utils.color_to_u32(255, 82, 82, 180)  -- 半透明红色
+            local btn_hovered = im_utils.color_to_u32(255, 112, 112, 220)
+            local btn_active = im_utils.color_to_u32(229, 57, 53, 255)
+            
+            reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), btn_bg)
+            reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), btn_hovered)
+            reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonActive(), btn_active)
+            reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FrameRounding(), 4)
+            
+            if reaper.ImGui_Button(ctx, "×", btn_size, btn_size) then
+                local sector = config.sectors[selected_sector_index]
+                if sector then
+                    sector.slots = {}
+                    selected_slot_index = nil
+                    is_modified = true
+                end
+            end
+            
+            -- 工具提示
+            if reaper.ImGui_IsItemHovered(ctx) then
+                reaper.ImGui_BeginTooltip(ctx)
+                reaper.ImGui_Text(ctx, "清除扇区")
+                reaper.ImGui_EndTooltip(ctx)
+            end
+            
+            reaper.ImGui_PopStyleVar(ctx)
+            reaper.ImGui_PopStyleColor(ctx, 3)
         end
         
         reaper.ImGui_EndChild(ctx)
     end
     
-    reaper.ImGui_Spacing(ctx)
-    
-    -- 轮盘大小调节
-    reaper.ImGui_Text(ctx, "轮盘大小")
-    reaper.ImGui_Spacing(ctx)
-    
-    -- 外半径滑块
-    reaper.ImGui_Text(ctx, "外半径:")
-    reaper.ImGui_SameLine(ctx)
-    local outer_radius = config.menu.outer_radius or 150
-    local outer_radius_changed, new_outer_radius = reaper.ImGui_SliderInt(ctx, "##OuterRadius", outer_radius, 80, 300, "%d px")
-    if outer_radius_changed and new_outer_radius ~= outer_radius then
-        config.menu.outer_radius = new_outer_radius
-        is_modified = true
-        -- 更新预览配置
-        preview_config = nil
-    end
-    
-    -- 内半径滑块
-    reaper.ImGui_Text(ctx, "内半径:")
-    reaper.ImGui_SameLine(ctx)
-    local inner_radius = config.menu.inner_radius or 35
-    local inner_radius_changed, new_inner_radius = reaper.ImGui_SliderInt(ctx, "##InnerRadius", inner_radius, 20, 100, "%d px")
-    if inner_radius_changed and new_inner_radius ~= inner_radius then
-        config.menu.inner_radius = new_inner_radius
-        is_modified = true
-        -- 更新预览配置
-        preview_config = nil
-    end
-    
-    reaper.ImGui_Spacing(ctx)
-    reaper.ImGui_Separator(ctx)
-    reaper.ImGui_Spacing(ctx)
-    
-    -- 扇区数量滑块
-    reaper.ImGui_Text(ctx, "扇区数量")
-    local sector_count = #config.sectors
-    local sector_count_changed, new_count = reaper.ImGui_SliderInt(ctx, "##SectorCount", sector_count, 1, 8, "%d")
-    
-    if sector_count_changed and new_count ~= sector_count then
-        M.adjust_sector_count(new_count)
-        is_modified = true
+    -- ============================================================
+    -- 2. Scrollable Settings Area (Remaining Space)
+    -- ============================================================
+    if reaper.ImGui_BeginChild(ctx, "LeftSettingsRegion", 0, 0, 1, reaper.ImGui_WindowFlags_None()) then
+        reaper.ImGui_Spacing(ctx)
+        
+        -- Global Settings
+        reaper.ImGui_Text(ctx, "全局设置")
+        reaper.ImGui_Spacing(ctx)
+        
+        -- 轮盘大小调节
+        reaper.ImGui_Text(ctx, "轮盘大小")
+        reaper.ImGui_Spacing(ctx)
+        
+        -- 外半径滑块
+        reaper.ImGui_Text(ctx, "外半径:")
+        reaper.ImGui_SameLine(ctx)
+        local outer_radius = config.menu.outer_radius or 150
+        local outer_radius_changed, new_outer_radius = reaper.ImGui_SliderInt(ctx, "##OuterRadius", outer_radius, 80, 300, "%d px")
+        if outer_radius_changed and new_outer_radius ~= outer_radius then
+            config.menu.outer_radius = new_outer_radius
+            is_modified = true
+        end
+        
+        -- 内半径滑块
+        reaper.ImGui_Text(ctx, "内半径:")
+        reaper.ImGui_SameLine(ctx)
+        local inner_radius = config.menu.inner_radius or 35
+        local inner_radius_changed, new_inner_radius = reaper.ImGui_SliderInt(ctx, "##InnerRadius", inner_radius, 20, 100, "%d px")
+        if inner_radius_changed and new_inner_radius ~= inner_radius then
+            config.menu.inner_radius = new_inner_radius
+            is_modified = true
+        end
+        
+        reaper.ImGui_Spacing(ctx)
+        reaper.ImGui_Separator(ctx)
+        reaper.ImGui_Spacing(ctx)
+        
+        -- 扇区数量滑块
+        reaper.ImGui_Text(ctx, "扇区数量")
+        local sector_count = #config.sectors
+        local sector_count_changed, new_count = reaper.ImGui_SliderInt(ctx, "##SectorCount", sector_count, 1, 8, "%d")
+        
+        if sector_count_changed and new_count ~= sector_count then
+            M.adjust_sector_count(new_count)
+            is_modified = true
+        end
+        
+        reaper.ImGui_Spacing(ctx)
+        reaper.ImGui_Separator(ctx)
+        reaper.ImGui_Spacing(ctx)
+        
+        -- 交互设置
+        reaper.ImGui_Text(ctx, "交互设置")
+        reaper.ImGui_Spacing(ctx)
+        
+        local hover_mode = config.menu.hover_to_open or false
+        local hover_changed, new_hover_mode = reaper.ImGui_Checkbox(ctx, "悬停打开子菜单", hover_mode)
+        if hover_changed then
+            config.menu.hover_to_open = new_hover_mode
+            is_modified = true
+        end
+        
+        reaper.ImGui_Spacing(ctx)
+        reaper.ImGui_Separator(ctx)
+        reaper.ImGui_Spacing(ctx)
+        
+        -- 扇区设置
+        reaper.ImGui_Text(ctx, "扇区设置")
+        reaper.ImGui_Spacing(ctx)
+        
+        if selected_sector_index and selected_sector_index >= 1 and selected_sector_index <= #config.sectors then
+            local sector = config.sectors[selected_sector_index]
+            if sector then
+                -- 名称输入框
+                reaper.ImGui_Text(ctx, "名称:")
+                reaper.ImGui_SameLine(ctx)
+                local name_buf = sector.name or ""
+                local name_changed, new_name = reaper.ImGui_InputText(ctx, "##SectorName", name_buf, 256)
+                if name_changed then
+                    sector.name = new_name
+                    is_modified = true
+                end
+                
+                reaper.ImGui_Spacing(ctx)
+                
+                -- [REMOVED] 底部的大红按钮已移除，改为预览区域的精致悬浮按钮
+            end
+        else
+            reaper.ImGui_TextDisabled(ctx, "(选择扇区以编辑)")
+        end
+        
+        reaper.ImGui_EndChild(ctx)
     end
 end
 
 -- ============================================================================
--- Phase 4 - 右侧编辑器面板
+-- Phase 4 - 右侧编辑器面板（新版本：分割视图）
 -- ============================================================================
 
--- 绘制编辑器面板
-function M.draw_editor_panel()
+-- 绘制编辑器面板（分割为两部分：网格、浏览器）
+function M.draw_editor_panel_split()
     if not selected_sector_index or selected_sector_index < 1 or selected_sector_index > #config.sectors then
         reaper.ImGui_TextDisabled(ctx, "请从左侧预览中选择一个扇区进行编辑")
         return
@@ -376,176 +467,700 @@ function M.draw_editor_panel()
         return
     end
     
-    -- 扇区基本信息编辑
-    reaper.ImGui_Text(ctx, "扇区信息")
-    reaper.ImGui_Separator(ctx)
-    reaper.ImGui_Spacing(ctx)
-    
-    -- 名称输入框
-    reaper.ImGui_Text(ctx, "名称:")
-    reaper.ImGui_SameLine(ctx)
-    local name_buf = sector.name or ""
-    local name_changed, new_name = reaper.ImGui_InputText(ctx, "##SectorName", name_buf, 256)
-    if name_changed then
-        sector.name = new_name
-        is_modified = true
+    -- 第一部分：子菜单网格编辑器（固定高度，从顶部开始）
+    if reaper.ImGui_BeginChild(ctx, "##EditorGrid", 0, 160, 1, reaper.ImGui_WindowFlags_None()) then
+        M.draw_submenu_grid(sector)
+        reaper.ImGui_EndChild(ctx)
     end
     
     reaper.ImGui_Spacing(ctx)
     
-    -- 图标输入框
-    reaper.ImGui_Text(ctx, "图标:")
-    reaper.ImGui_SameLine(ctx)
-    local icon_buf = sector.icon or ""
-    local icon_changed, new_icon = reaper.ImGui_InputText(ctx, "##SectorIcon", icon_buf, 16)
-    if icon_changed then
-        sector.icon = new_icon
-        is_modified = true
+    -- 第二部分：属性栏（Inspector）- 在网格和浏览器之间
+    reaper.ImGui_Separator(ctx)
+    reaper.ImGui_Spacing(ctx)
+    
+    -- 属性栏内容
+    if selected_slot_index and selected_slot_index >= 1 then
+        local slot = sector.slots[selected_slot_index]
+        if slot then
+            -- 选中且已填充：显示编辑界面
+            reaper.ImGui_AlignTextToFramePadding(ctx)
+            reaper.ImGui_Text(ctx, "标签:")
+            reaper.ImGui_SameLine(ctx)
+            
+            local name_buf = slot.name or ""
+            local avail_w = reaper.ImGui_GetContentRegionAvail(ctx)
+            local clear_btn_w = 50
+            local input_w = math.max(100, avail_w - clear_btn_w - 8)  -- 留出按钮和间距
+            
+            reaper.ImGui_SetNextItemWidth(ctx, input_w)
+            local name_changed, new_name = reaper.ImGui_InputText(ctx, "##SlotNameEdit", name_buf, 256)
+            if name_changed then
+                slot.name = new_name
+                is_modified = true
+            end
+            
+            reaper.ImGui_SameLine(ctx, 0, 4)
+            -- 垃圾桶按钮（清除当前插槽）
+            if reaper.ImGui_Button(ctx, "🗑️", clear_btn_w, 0) then
+                sector.slots[selected_slot_index] = nil
+                selected_slot_index = nil
+                is_modified = true
+            end
+        else
+            -- 选中但为空：提示拖放
+            reaper.ImGui_TextDisabled(ctx, "拖放 Action/FX 以分配")
+        end
+    else
+        -- 未选中：提示选择
+        reaper.ImGui_TextDisabled(ctx, "在上方选择一个插槽进行编辑，或右键点击插槽查看选项")
     end
     
     reaper.ImGui_Spacing(ctx)
-    
-    -- 颜色选择器已移除：强制执行统一的深灰色主题（Mantrika 风格）
-    -- 所有扇区使用统一的灰色，不再支持自定义颜色
-    
-    reaper.ImGui_Spacing(ctx)
     reaper.ImGui_Separator(ctx)
     reaper.ImGui_Spacing(ctx)
     
-    -- 插槽编辑器（紧凑表格布局）
-    reaper.ImGui_Text(ctx, "插槽列表 (12 个)")
-    reaper.ImGui_Separator(ctx)
-    reaper.ImGui_Spacing(ctx)
+    -- 第三部分：资源浏览器（只包含标签和搜索栏）
+    local avail_w, avail_h = reaper.ImGui_GetContentRegionAvail(ctx)
+    if reaper.ImGui_BeginChild(ctx, "##EditorBrowser", 0, 0, 1, reaper.ImGui_WindowFlags_None()) then
+        M.draw_resource_browser_simplified(sector)
+        reaper.ImGui_EndChild(ctx)
+    end
+end
+
+
+-- 绘制子菜单网格编辑器（3列网格，支持拖放）
+function M.draw_submenu_grid(sector)
+    -- 确保 slots 数组存在
+    if not sector.slots then
+        sector.slots = {}
+    end
     
-    -- 设置紧凑的行高
-    reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FramePadding(), 4, 2)
+    -- 计算需要显示的插槽数量（至少9个，可扩展）
+    local min_slots = 9
+    local current_slot_count = #sector.slots
+    local display_count = math.max(min_slots, current_slot_count)
     
-    local max_slots = 12
-    -- 使用表格创建紧凑的插槽列表
-    if reaper.ImGui_BeginTable(ctx, "##SlotTable", 5, 
-        reaper.ImGui_TableFlags_RowBg() | reaper.ImGui_TableFlags_BordersInnerH() | 
-        reaper.ImGui_TableFlags_ScrollY(), -1, -1) then
-        
-        -- 表头
-        reaper.ImGui_TableSetupColumn(ctx, "ID", reaper.ImGui_TableColumnFlags_WidthFixed(), 40, 0)
-        reaper.ImGui_TableSetupColumn(ctx, "标签", reaper.ImGui_TableColumnFlags_WidthStretch(), 0, 1)
-        reaper.ImGui_TableSetupColumn(ctx, "类型", reaper.ImGui_TableColumnFlags_WidthFixed(), 80, 2)
-        reaper.ImGui_TableSetupColumn(ctx, "值", reaper.ImGui_TableColumnFlags_WidthStretch(), 0, 3)
-        reaper.ImGui_TableSetupColumn(ctx, "操作", reaper.ImGui_TableColumnFlags_WidthFixed(), 60, 4)
-        reaper.ImGui_TableSetupScrollFreeze(ctx, 0, 1)  -- 冻结表头
-        reaper.ImGui_TableHeadersRow(ctx)
-        
-        -- 绘制所有 12 个插槽
-        for i = 1, max_slots do
-            reaper.ImGui_TableNextRow(ctx)
-            reaper.ImGui_TableNextColumn(ctx)
-            
-            local slot = sector.slots and sector.slots[i] or nil
-            
-            -- ID 列
-            reaper.ImGui_Text(ctx, tostring(i))
-            
-            -- 标签列
-            reaper.ImGui_TableNextColumn(ctx)
-            if slot then
-                local name_buf = slot.name or ""
-                local name_changed, new_name = reaper.ImGui_InputText(ctx, "##SlotName" .. i, name_buf, 256)
-                if name_changed then
-                    slot.name = new_name
-                    is_modified = true
-                end
-            else
-                reaper.ImGui_TextDisabled(ctx, "(空)")
-            end
-            
-            -- 类型列
-            reaper.ImGui_TableNextColumn(ctx)
-            if slot then
-                local type_options = {"action", "fx", "script"}
-                local current_type = slot.type or "action"
-                local current_type_display = current_type
-                
-                if reaper.ImGui_BeginCombo(ctx, "##SlotType" .. i, current_type_display, reaper.ImGui_ComboFlags_None()) then
-                    for j, opt in ipairs(type_options) do
-                        local is_selected = (opt == current_type)
-                        if reaper.ImGui_Selectable(ctx, opt, is_selected, reaper.ImGui_SelectableFlags_None(), 0, 0) then
-                            slot.type = opt
-                            -- 重置 data 字段
-                            if slot.type == "action" then
-                                slot.data = {command_id = 0}
-                            elseif slot.type == "fx" then
-                                slot.data = {fx_name = ""}
-                            elseif slot.type == "script" then
-                                slot.data = {script_path = ""}
-                            end
-                            is_modified = true
-                        end
-                        if is_selected then
-                            reaper.ImGui_SetItemDefaultFocus(ctx)
-                        end
-                    end
-                    reaper.ImGui_EndCombo(ctx)
-                end
-            else
-                reaper.ImGui_TextDisabled(ctx, "-")
-            end
-            
-            -- 值列
-            reaper.ImGui_TableNextColumn(ctx)
-            if slot then
-                if slot.type == "action" then
-                    local cmd_id = slot.data and slot.data.command_id or 0
-                    local cmd_id_changed, new_cmd_id = reaper.ImGui_InputInt(ctx, "##SlotValue" .. i, cmd_id, 1, 100)
-                    if cmd_id_changed then
-                        if not slot.data then slot.data = {} end
-                        slot.data.command_id = new_cmd_id
-                        is_modified = true
-                    end
-                elseif slot.type == "fx" then
-                    local fx_name = slot.data and slot.data.fx_name or ""
-                    local fx_name_changed, new_fx_name = reaper.ImGui_InputText(ctx, "##SlotValue" .. i, fx_name, 256)
-                    if fx_name_changed then
-                        if not slot.data then slot.data = {} end
-                        slot.data.fx_name = new_fx_name
-                        is_modified = true
-                    end
-                elseif slot.type == "script" then
-                    local script_path = slot.data and slot.data.script_path or ""
-                    local script_path_changed, new_script_path = reaper.ImGui_InputText(ctx, "##SlotValue" .. i, script_path, 512)
-                    if script_path_changed then
-                        if not slot.data then slot.data = {} end
-                        slot.data.script_path = new_script_path
-                        is_modified = true
-                    end
-                end
-            else
-                reaper.ImGui_TextDisabled(ctx, "-")
-            end
-            
-            -- 操作列
-            reaper.ImGui_TableNextColumn(ctx)
-            if slot then
-                if reaper.ImGui_Button(ctx, "删除##Slot" .. i, 0, 0) then
-                    sector.slots[i] = nil
-                    is_modified = true
-                end
-            else
-                if reaper.ImGui_Button(ctx, "添加##Slot" .. i, 0, 0) then
-                    sector.slots[i] = {
-                        type = "action",
-                        name = "新插槽",
-                        data = {command_id = 0},
-                        description = ""
-                    }
-                    is_modified = true
-                end
-            end
+    -- 3列网格布局（严格对齐）
+    local cols = 3
+    local spacing = 8  -- 列间距
+    local btn_h = 40  -- 固定按钮高度，更好的视觉效果
+    
+    -- 计算按钮宽度（动态适应3列）
+    local avail_w = reaper.ImGui_GetContentRegionAvail(ctx)
+    local btn_w = (avail_w - (spacing * (cols - 1))) / cols
+    
+    -- 绘制网格（严格3列布局）
+    for i = 1, display_count do
+        -- 如果不是第一列，使用 SameLine
+        if (i - 1) % cols ~= 0 then
+            reaper.ImGui_SameLine(ctx, 0, spacing)
         end
         
-        reaper.ImGui_EndTable(ctx)
+        local slot = sector.slots[i]
+        local slot_id = "##Slot" .. i
+        
+        reaper.ImGui_PushID(ctx, slot_id)
+        
+        -- 检查是否选中
+        local is_selected = (selected_slot_index == i)
+        
+        -- 绘制插槽
+        if slot then
+            -- 已填充插槽：实心按钮样式
+            local full_name = slot.name or "未命名"
+            local button_label = full_name
+            
+            -- 计算文本宽度，如果太长则截断
+            local text_width, text_height = reaper.ImGui_CalcTextSize(ctx, button_label)
+            local max_text_width = btn_w - 16  -- 留出边距
+            
+            if text_width > max_text_width then
+                -- 截断文本
+                local truncated = ""
+                for j = 1, string.len(button_label) do
+                    local test_text = string.sub(button_label, 1, j)
+                    local test_w, _ = reaper.ImGui_CalcTextSize(ctx, test_text .. "...")
+                    if test_w > max_text_width then
+                        truncated = string.sub(button_label, 1, j - 1) .. "..."
+                        break
+                    end
+                end
+                button_label = truncated or (string.sub(button_label, 1, 8) .. "...")
+            end
+            
+            -- 已配置的按钮：比背景明显亮一个度（更易区分）
+            local filled_bg = 0x2A2A2FFF  -- 比空插槽亮
+            local filled_hovered = 0x3A3A3FFF
+            local filled_active = 0x4A4A4FFF
+            
+            -- 如果选中，进一步高亮
+            if is_selected then
+                filled_bg = 0x3F3F46FF
+                filled_hovered = 0x4F4F56FF
+                filled_active = 0x5F5F66FF
+            end
+            
+            reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), filled_bg)
+            reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), filled_hovered)
+            reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonActive(), filled_active)
+            
+            if reaper.ImGui_Button(ctx, button_label, btn_w, btn_h) then
+                -- 左键点击：选中插槽
+                selected_slot_index = i
+            end
+            
+            -- 如果文本被截断，显示工具提示
+            if reaper.ImGui_IsItemHovered(ctx) and text_width > max_text_width then
+                reaper.ImGui_BeginTooltip(ctx)
+                reaper.ImGui_Text(ctx, full_name)
+                reaper.ImGui_EndTooltip(ctx)
+            end
+            
+            -- Pop 3 个颜色（Button, ButtonHovered, ButtonActive）
+            reaper.ImGui_PopStyleColor(ctx, 3)
+            
+            -- 右键菜单
+            if reaper.ImGui_IsItemClicked(ctx, 1) then  -- 1 = 右键
+                context_menu_slot_index = i
+                context_menu_sector_index = selected_sector_index
+                reaper.ImGui_OpenPopup(ctx, "##SlotContextMenu")
+            end
+            
+            -- [NEW] 拖拽源：允许在网格内拖拽插槽进行交换
+            if reaper.ImGui_BeginDragDropSource(ctx, reaper.ImGui_DragDropFlags_None()) then
+                -- 使用特殊的 payload 类型来标识内部拖拽
+                local payload_data = string.format("SLOT_SWAP|%d", i)
+                reaper.ImGui_SetDragDropPayload(ctx, "DND_SLOT_SWAP", payload_data)
+                reaper.ImGui_Text(ctx, button_label)
+                reaper.ImGui_EndDragDropSource(ctx)
+            end
+        else
+            -- 空插槽：更暗的背景，一眼就能看出是空的
+            reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), 0x141414FF)  -- 更暗
+            reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), 0x1E1E1EFF)  -- 悬停时稍亮
+            reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonActive(), 0x282828FF)
+            reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FrameBorderSize(), 1.0)
+            
+            if is_selected then
+                reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), 0x2A2A2AFF)
+            end
+            
+            if reaper.ImGui_Button(ctx, "Empty", btn_w, btn_h) then
+                -- 左键点击空插槽：选中
+                selected_slot_index = i
+            end
+            
+            if is_selected then
+                reaper.ImGui_PopStyleColor(ctx, 1)
+            end
+            
+            -- 右键菜单
+            if reaper.ImGui_IsItemClicked(ctx, 1) then  -- 1 = 右键
+                context_menu_slot_index = i
+                context_menu_sector_index = selected_sector_index
+                reaper.ImGui_OpenPopup(ctx, "##SlotContextMenu")
+            end
+            
+            reaper.ImGui_PopStyleVar(ctx)
+            reaper.ImGui_PopStyleColor(ctx, 3)
+        end
+        
+        -- 设置插槽为拖放目标（在按钮之后，绑定到按钮）
+        -- 支持覆盖已有内容：直接设置新值，无论插槽是否已有内容
+        if reaper.ImGui_BeginDragDropTarget(ctx) then
+            -- [NEW] 优先处理内部插槽交换
+            local ret_swap, payload_swap = reaper.ImGui_AcceptDragDropPayload(ctx, "DND_SLOT_SWAP")
+            if ret_swap then
+                -- 处理插槽交换（payload 格式: "SLOT_SWAP|source_index"）
+                if payload_swap then
+                    local parts = {}
+                    for part in string.gmatch(payload_swap, "[^|]+") do
+                        table.insert(parts, part)
+                    end
+                    if #parts >= 2 and parts[1] == "SLOT_SWAP" then
+                        local source_index = tonumber(parts[2])
+                        if source_index and source_index >= 1 and source_index <= display_count then
+                            -- 交换插槽内容
+                            local source_slot = sector.slots[source_index]
+                            local target_slot = sector.slots[i]
+                            
+                            sector.slots[source_index] = target_slot
+                            sector.slots[i] = source_slot
+                            
+                            -- 如果选中的插槽被交换，更新选中索引
+                            if selected_slot_index == source_index then
+                                selected_slot_index = i
+                            elseif selected_slot_index == i then
+                                selected_slot_index = source_index
+                            end
+                            
+                            is_modified = true
+                        end
+                    end
+                end
+            else
+                -- 处理外部拖放（Action/FX）
+                local ret, payload = reaper.ImGui_AcceptDragDropPayload(ctx, "DND_ACTION")
+                if ret then
+                    -- 处理 Action 拖放（payload 格式: "command_id|name"）
+                    if payload then
+                        local parts = {}
+                        for part in string.gmatch(payload, "[^|]+") do
+                            table.insert(parts, part)
+                        end
+                        if #parts >= 2 then
+                            local cmd_id = tonumber(parts[1]) or 0
+                            local name = parts[2] or ""
+                            -- 直接覆盖，无论插槽是否已有内容
+                            sector.slots[i] = {
+                                type = "action",
+                                name = name,
+                                data = {command_id = cmd_id}
+                            }
+                            selected_slot_index = i  -- 自动选中该插槽
+                            is_modified = true
+                        end
+                    end
+                else
+                    ret, payload = reaper.ImGui_AcceptDragDropPayload(ctx, "DND_FX")
+                    if ret then
+                        -- 处理 FX/Chain/Template 拖放（payload 格式: "type|id"）
+                        if payload then
+                            local parts = {}
+                            for part in string.gmatch(payload, "[^|]+") do
+                                table.insert(parts, part)
+                            end
+                            
+                            if #parts >= 2 then
+                                local payload_type = parts[1]  -- fx, chain, template
+                                local payload_id = parts[2]    -- original_name, path, etc.
+                                
+                                -- 根据类型创建不同的插槽数据
+                                if payload_type == "chain" then
+                                    sector.slots[i] = {
+                                        type = "chain",
+                                        name = payload_id:match("([^/\\]+)%.RfxChain$") or payload_id,
+                                        data = {path = payload_id}
+                                    }
+                                elseif payload_type == "template" then
+                                    sector.slots[i] = {
+                                        type = "template",
+                                        name = payload_id:match("([^/\\]+)%.RTrackTemplate$") or payload_id,
+                                        data = {path = payload_id}
+                                    }
+                                else
+                                    -- 默认 FX
+                                    sector.slots[i] = {
+                                        type = "fx",
+                                        name = payload_id:gsub("^[^:]+: ", ""),  -- 移除前缀
+                                        data = {fx_name = payload_id}
+                                    }
+                                end
+                                
+                                selected_slot_index = i  -- 自动选中该插槽
+                                is_modified = true
+                            else
+                                -- 兼容旧格式（只有 fx_name）
+                                sector.slots[i] = {
+                                    type = "fx",
+                                    name = payload,
+                                    data = {fx_name = payload}
+                                }
+                                selected_slot_index = i
+                                is_modified = true
+                            end
+                        end
+                    end
+                end
+            end
+            reaper.ImGui_EndDragDropTarget(ctx)
+        end
+        
+        reaper.ImGui_PopID(ctx)
     end
     
-    reaper.ImGui_PopStyleVar(ctx)  -- 恢复 FramePadding
+    -- 添加 "+" 按钮（扩展插槽）
+    if (display_count % cols) ~= 0 then
+        reaper.ImGui_SameLine(ctx, 0, spacing)
+    end
+    
+    if reaper.ImGui_Button(ctx, "+", btn_w, btn_h) then
+        -- 添加新插槽
+        table.insert(sector.slots, {
+            type = "action",
+            name = "新插槽",
+            data = {command_id = 0}
+        })
+        is_modified = true
+    end
+end
+
+-- 绘制资源浏览器（简化版：固定头部，防止搜索栏滚动）
+function M.draw_resource_browser_simplified(sector)
+    -- 标签栏（直接绘制在父窗口中，不滚动）
+    if reaper.ImGui_BeginTabBar(ctx, "##ResourceTabs", reaper.ImGui_TabBarFlags_None()) then
+        -- Actions 标签页
+        if reaper.ImGui_BeginTabItem(ctx, "Actions") then
+            browser_tab = 0
+            reaper.ImGui_EndTabItem(ctx)
+        end
+        
+        -- FX 标签页
+        if reaper.ImGui_BeginTabItem(ctx, "FX") then
+            browser_tab = 1
+            reaper.ImGui_EndTabItem(ctx)
+        end
+        
+        reaper.ImGui_EndTabBar(ctx)
+    end
+    
+    reaper.ImGui_Spacing(ctx)
+    
+    -- 绘制标签页内容（搜索栏和列表在各自的函数中处理）
+    if browser_tab == 0 then
+        -- Actions 标签页内容
+        M.draw_action_browser()
+    else
+        -- FX 标签页内容
+        M.draw_fx_browser()
+    end
+end
+
+-- 绘制资源浏览器（标签页：Actions / FX，属性栏合并到标签栏）
+function M.draw_resource_browser_with_properties(sector)
+    -- 标签栏
+    if reaper.ImGui_BeginTabBar(ctx, "##ResourceTabs", reaper.ImGui_TabBarFlags_None()) then
+        -- Actions 标签页
+        if reaper.ImGui_BeginTabItem(ctx, "Actions") then
+            browser_tab = 0
+            reaper.ImGui_EndTabItem(ctx)
+        end
+        
+        -- FX 标签页
+        if reaper.ImGui_BeginTabItem(ctx, "FX") then
+            browser_tab = 1
+            reaper.ImGui_EndTabItem(ctx)
+        end
+        
+        reaper.ImGui_EndTabBar(ctx)
+    end
+    
+    -- 在同一行右侧绘制属性编辑器（在标签栏之后）
+    reaper.ImGui_SameLine(ctx, 0, 8)
+    
+    -- 修复垂直对齐（关键：确保与标签栏对齐）
+    reaper.ImGui_AlignTextToFramePadding(ctx)
+    
+    -- 计算可用宽度和组件尺寸
+    local avail_w = reaper.ImGui_GetContentRegionAvail(ctx)
+    local clear_btn_w = 50
+    local label_text = "名称:"
+    local label_w, label_h = reaper.ImGui_CalcTextSize(ctx, label_text)
+    local spacing_total = 20  -- 总间距（标签、输入框、按钮之间的间距）
+    local input_w = math.max(100, avail_w - label_w - clear_btn_w - spacing_total)  -- 确保最小宽度
+    
+    -- 检查是否有选中的插槽
+    if selected_slot_index and selected_slot_index >= 1 then
+        local slot = sector.slots[selected_slot_index]
+        
+        if slot then
+            -- 选中且已填充：显示编辑界面
+            reaper.ImGui_Text(ctx, label_text)
+            reaper.ImGui_SameLine(ctx)
+            
+            local name_buf = slot.name or ""
+            reaper.ImGui_SetNextItemWidth(ctx, input_w)
+            local name_changed, new_name = reaper.ImGui_InputText(ctx, "##SlotNameEdit", name_buf, 256)
+            if name_changed then
+                slot.name = new_name
+                is_modified = true
+            end
+            
+            reaper.ImGui_SameLine(ctx, 0, 4)
+            if reaper.ImGui_Button(ctx, "清除", clear_btn_w, 0) then
+                sector.slots[selected_slot_index] = nil
+                selected_slot_index = nil
+                is_modified = true
+            end
+        else
+            -- 选中但为空：提示拖放
+            reaper.ImGui_TextDisabled(ctx, "拖放 Action/FX 以分配")
+        end
+    else
+        -- 未选中：提示选择
+        reaper.ImGui_TextDisabled(ctx, "选择插槽以编辑")
+    end
+    
+    reaper.ImGui_Spacing(ctx)
+    
+    -- 绘制标签页内容
+    if browser_tab == 0 then
+        -- Actions 标签页内容
+        M.draw_action_browser()
+    else
+        -- FX 标签页内容
+        M.draw_fx_browser()
+    end
+end
+
+-- 绘制资源浏览器（标签页：Actions / FX）（保留用于兼容）
+function M.draw_resource_browser()
+    -- 标签页
+    if reaper.ImGui_BeginTabBar(ctx, "##ResourceTabs", reaper.ImGui_TabBarFlags_None()) then
+        -- Actions 标签页
+        if reaper.ImGui_BeginTabItem(ctx, "Actions") then
+            browser_tab = 0
+            M.draw_action_browser()
+            reaper.ImGui_EndTabItem(ctx)
+        end
+        
+        -- FX 标签页
+        if reaper.ImGui_BeginTabItem(ctx, "FX") then
+            browser_tab = 1
+            M.draw_fx_browser()
+            reaper.ImGui_EndTabItem(ctx)
+        end
+        
+        reaper.ImGui_EndTabBar(ctx)
+    end
+end
+
+-- 绘制 Action 浏览器（高性能，使用 ListClipper，固定头部）
+function M.draw_action_browser()
+    -- 搜索框（在 Child 外面，不滚动）
+    local search_changed, new_search = reaper.ImGui_InputText(ctx, "##ActionSearch", action_search_text, 256)
+    if search_changed then
+        action_search_text = new_search
+        -- 重新过滤
+        actions_filtered = M.filter_actions(action_search_text)
+    elseif #actions_filtered == 0 then
+        -- 初始化过滤列表
+        actions_filtered = M.filter_actions(action_search_text)
+    end
+    
+    reaper.ImGui_Separator(ctx)
+    
+    -- 列表区域（可滚动）
+    local avail_w, avail_h = reaper.ImGui_GetContentRegionAvail(ctx)
+    if reaper.ImGui_BeginChild(ctx, "ActionList", 0, 0, 1, reaper.ImGui_WindowFlags_None()) then
+        -- 使用 ListClipper 进行高性能渲染
+        -- 使用 ValidatePtr 验证 ListClipper 是否有效，避免频繁创建
+        if not reaper.ImGui_ValidatePtr(action_list_clipper, 'ImGui_ListClipper*') then
+            action_list_clipper = reaper.ImGui_CreateListClipper(ctx)
+        end
+        
+        if action_list_clipper then
+            reaper.ImGui_ListClipper_Begin(action_list_clipper, #actions_filtered)
+            while reaper.ImGui_ListClipper_Step(action_list_clipper) do
+                local display_start, display_end = reaper.ImGui_ListClipper_GetDisplayRange(action_list_clipper)
+                
+                for i = display_start, display_end - 1 do
+                    if i + 1 <= #actions_filtered then
+                        local action = actions_filtered[i + 1]
+                        local item_label = string.format("%d: %s", action.command_id, action.name or "")
+                        
+                        -- 先渲染 Selectable
+                        if reaper.ImGui_Selectable(ctx, item_label, false, reaper.ImGui_SelectableFlags_None(), 0, 0) then
+                            -- 点击选择（可选功能）
+                        end
+                        
+                        -- 然后在 Selectable 之后设置为拖放源
+                        if reaper.ImGui_BeginDragDropSource(ctx, reaper.ImGui_DragDropFlags_None()) then
+                            local payload_data = string.format("%d|%s", action.command_id, action.name or "")
+                            reaper.ImGui_SetDragDropPayload(ctx, "DND_ACTION", payload_data)
+                            reaper.ImGui_Text(ctx, item_label)
+                            reaper.ImGui_EndDragDropSource(ctx)
+                        end
+                    end
+                end
+            end
+            reaper.ImGui_ListClipper_End(action_list_clipper)
+        end
+        
+        reaper.ImGui_EndChild(ctx)
+    end
+end
+
+-- 绘制 FX 浏览器（分类版本，固定头部）
+function M.draw_fx_browser()
+    -- 定义过滤器按钮
+    local filters = {"All", "VST", "VST3", "JS", "AU", "CLAP", "LV2", "Chain", "Template"}
+    
+    -- 绘制过滤器按钮（水平排列，在 Child 外面）
+    for _, filter in ipairs(filters) do
+        local is_selected = (current_fx_filter == filter)
+        if is_selected then
+            reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), 0x3F3F46FF)
+            reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), 0x4F4F56FF)
+        end
+        
+        if reaper.ImGui_Button(ctx, filter, 0, 0) then
+            current_fx_filter = filter
+        end
+        
+        if is_selected then
+            reaper.ImGui_PopStyleColor(ctx, 2)
+        end
+        
+        if filter ~= filters[#filters] then
+            reaper.ImGui_SameLine(ctx, 0, 4)
+        end
+    end
+    
+    -- 紧凑间距：类型按钮和搜索框属于同一个"工具栏"
+    reaper.ImGui_Spacing(ctx)
+    
+    -- 搜索框（在 Child 外面，不滚动）
+    local search_changed, new_search = reaper.ImGui_InputText(ctx, "##FXSearch", fx_search_text, 256)
+    if search_changed then
+        fx_search_text = new_search
+    end
+    
+    reaper.ImGui_Separator(ctx)
+    
+    -- 准备显示列表（根据过滤器）
+    local display_list = {}
+    
+    if current_fx_filter == "Template" then
+        display_list = utils_fx.get_track_templates()
+    elseif current_fx_filter == "Chain" then
+        display_list = utils_fx.get_fx_chains()
+    else
+        -- 标准 FX，按类型过滤
+        local all_fx = utils_fx.get_all_fx()
+        for _, fx in ipairs(all_fx) do
+            if current_fx_filter == "All" or fx.type == current_fx_filter then
+                table.insert(display_list, fx)
+            end
+        end
+    end
+    
+    -- 应用搜索过滤
+    if fx_search_text and fx_search_text ~= "" then
+        local filtered = {}
+        local lower_search = string.lower(fx_search_text)
+        for _, item in ipairs(display_list) do
+            local name = item.name or ""
+            if string.find(string.lower(name), lower_search, 1, true) then
+                table.insert(filtered, item)
+            end
+        end
+        display_list = filtered
+    end
+    
+    -- 列表区域（可滚动）
+    if reaper.ImGui_BeginChild(ctx, "FXList", 0, 0, 1, reaper.ImGui_WindowFlags_None()) then
+        -- 使用 ListClipper 进行高性能渲染
+        if not reaper.ImGui_ValidatePtr(fx_list_clipper, 'ImGui_ListClipper*') then
+            fx_list_clipper = reaper.ImGui_CreateListClipper(ctx)
+        end
+        
+        if fx_list_clipper then
+            reaper.ImGui_ListClipper_Begin(fx_list_clipper, #display_list)
+            while reaper.ImGui_ListClipper_Step(fx_list_clipper) do
+                local display_start, display_end = reaper.ImGui_ListClipper_GetDisplayRange(fx_list_clipper)
+                
+                for i = display_start, display_end - 1 do
+                    if i + 1 <= #display_list then
+                        local item = display_list[i + 1]
+                        local item_label = item.name or "未命名"
+                        
+                        -- 添加类型标签（如果有）
+                        if item.type and item.type ~= "Other" then
+                            item_label = string.format("[%s] %s", item.type, item_label)
+                        end
+                        
+                        -- 渲染 Selectable
+                        if reaper.ImGui_Selectable(ctx, item_label, false, reaper.ImGui_SelectableFlags_None(), 0, 0) then
+                            -- 点击选择（可选功能）
+                        end
+                        
+                        -- 设置为拖放源
+                        if reaper.ImGui_BeginDragDropSource(ctx, reaper.ImGui_DragDropFlags_None()) then
+                            -- 根据类型设置不同的 payload
+                            local payload_type = "fx"
+                            local payload_id = item.original_name or item.name
+                            
+                            if current_fx_filter == "Chain" or item.type == "Chain" then
+                                payload_type = "chain"
+                                payload_id = item.path or item.name
+                            elseif current_fx_filter == "Template" or item.type == "TrackTemplate" then
+                                payload_type = "template"
+                                payload_id = item.path or item.name
+                            end
+                            
+                            -- Payload 格式: "type|id"
+                            local payload_data = string.format("%s|%s", payload_type, payload_id)
+                            reaper.ImGui_SetDragDropPayload(ctx, "DND_FX", payload_data)
+                            reaper.ImGui_Text(ctx, item_label)
+                            reaper.ImGui_EndDragDropSource(ctx)
+                        end
+                    end
+                end
+            end
+            reaper.ImGui_ListClipper_End(fx_list_clipper)
+        end
+        
+        -- 如果列表为空，显示提示
+        if #display_list == 0 then
+            reaper.ImGui_TextDisabled(ctx, string.format("未找到匹配的 %s", current_fx_filter))
+        end
+        
+        reaper.ImGui_EndChild(ctx)
+    end
+end
+
+-- 处理右键菜单
+function M.handle_context_menu()
+    if context_menu_slot_index and context_menu_sector_index then
+        local sector = config.sectors[context_menu_sector_index]
+        if sector then
+            if not sector.slots then
+                sector.slots = {}
+            end
+            local slot = sector.slots[context_menu_slot_index]
+            
+            -- 使用 BeginPopup 显示菜单
+            if reaper.ImGui_BeginPopup(ctx, "##SlotContextMenu") then
+                if slot then
+                    -- 编辑名称：选中插槽并聚焦到属性栏的输入框
+                    if reaper.ImGui_MenuItem(ctx, "编辑名称") then
+                        selected_slot_index = context_menu_slot_index
+                        -- 注意：ImGui 会自动聚焦到下一个 InputText，所以选中插槽即可
+                        context_menu_slot_index = nil
+                        context_menu_sector_index = nil
+                    end
+                    
+                    -- 清除插槽
+                    if reaper.ImGui_MenuItem(ctx, "清除插槽") then
+                        sector.slots[context_menu_slot_index] = nil
+                        if selected_slot_index == context_menu_slot_index then
+                            selected_slot_index = nil
+                        end
+                        is_modified = true
+                        context_menu_slot_index = nil
+                        context_menu_sector_index = nil
+                    end
+                else
+                    -- 空插槽：添加新插槽
+                    if reaper.ImGui_MenuItem(ctx, "添加插槽") then
+                        sector.slots[context_menu_slot_index] = {
+                            type = "action",
+                            name = "新插槽",
+                            data = {command_id = 0}
+                        }
+                        selected_slot_index = context_menu_slot_index
+                        is_modified = true
+                        context_menu_slot_index = nil
+                        context_menu_sector_index = nil
+                    end
+                end
+                
+                reaper.ImGui_EndPopup(ctx)
+            end
+        end
+    end
 end
 
 -- ============================================================================
@@ -670,43 +1285,55 @@ end
 -- Phase 4 - 底部操作栏
 -- ============================================================================
 
--- 绘制底部操作栏（参考Markers风格）
+-- 绘制底部操作栏（稳定布局）
 function M.draw_action_bar()
-    -- 显示修改状态
-    if is_modified then
-        local yellow_color = im_utils.color_to_u32(255, 200, 0, 255)
-        reaper.ImGui_TextColored(ctx, yellow_color, "* 有未保存的更改")
-        reaper.ImGui_SameLine(ctx, 0, 20)
-    end
-    
-    -- 保存更改按钮（使用Markers风格的按钮颜色）
+    -- 左侧：按钮组（紧密排列）
     local save_btn_color = im_utils.color_to_u32(66, 165, 245, 200)  -- #42A5F5
     reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), save_btn_color)
     reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), im_utils.color_to_u32(100, 181, 246, 255))
     reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonActive(), im_utils.color_to_u32(30, 136, 229, 255))
-    if reaper.ImGui_Button(ctx, " 保存更改 ", 0, 0) then
-        M.save_config()
+    if reaper.ImGui_Button(ctx, "保存", 0, 0) then
+        if M.save_config() then
+            save_feedback_time = os.time()
+        end
     end
     reaper.ImGui_PopStyleColor(ctx, 3)
     
-    reaper.ImGui_SameLine(ctx, 0, 8)
+    reaper.ImGui_SameLine(ctx, 0, 4)
     
     -- 丢弃按钮
-    if reaper.ImGui_Button(ctx, " 丢弃 ", 0, 0) then
+    if reaper.ImGui_Button(ctx, "丢弃", 0, 0) then
         M.discard_changes()
     end
     
-    reaper.ImGui_SameLine(ctx, 0, 8)
+    reaper.ImGui_SameLine(ctx, 0, 4)
     
     -- 重置按钮（使用警告颜色）
     local reset_btn_color = im_utils.color_to_u32(255, 82, 82, 200)  -- #FF5252
     reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_Button(), reset_btn_color)
     reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonHovered(), im_utils.color_to_u32(255, 112, 112, 255))
     reaper.ImGui_PushStyleColor(ctx, reaper.ImGui_Col_ButtonActive(), im_utils.color_to_u32(229, 57, 53, 255))
-    if reaper.ImGui_Button(ctx, " 重置 ", 0, 0) then
+    if reaper.ImGui_Button(ctx, "重置", 0, 0) then
         M.reset_to_default()
     end
     reaper.ImGui_PopStyleColor(ctx, 3)
+    
+    -- 右侧：状态文本（对齐到最右边）
+    local avail_w = reaper.ImGui_GetContentRegionAvail(ctx)
+    if avail_w > 0 then
+        reaper.ImGui_SameLine(ctx, 0, avail_w - 200)  -- 预留 200 像素给状态文本
+    end
+    
+    -- 优先级 1: 显示保存成功消息（2秒内）
+    local current_time = os.time()
+    if current_time - save_feedback_time < 2 then
+        local green_color = im_utils.color_to_u32(76, 175, 80, 255)  -- #4CAF50
+        reaper.ImGui_TextColored(ctx, green_color, "✔ 配置已保存")
+    -- 优先级 2: 显示未保存更改
+    elseif is_modified then
+        local yellow_color = im_utils.color_to_u32(255, 200, 0, 255)  -- #FFC800
+        reaper.ImGui_TextColored(ctx, yellow_color, "* 有未保存的更改")
+    end
 end
 
 -- ============================================================================
@@ -729,7 +1356,7 @@ function M.save_config()
         end
     end
     
-    -- 保存配置
+    -- 保存配置（config_manager.save() 内部会发出更新信号）
     local success = config_manager.save(config)
     if success then
         is_modified = false
@@ -771,6 +1398,7 @@ function M.reset_to_default()
         original_config = M.deep_copy_config(config)
         is_modified = true
         selected_sector_index = nil
+        selected_slot_index = nil
         styles.init_from_config(config)
         -- reaper.ShowConsoleMsg("已重置为默认配置\n")
     end
@@ -786,7 +1414,6 @@ function M.adjust_sector_count(new_count)
             table.insert(config.sectors, {
                 id = i,
                 name = "扇区 " .. i,
-                icon = "●",
                 color = {26, 26, 26, 180},
                 slots = {}
             })
@@ -819,8 +1446,9 @@ function M.cleanup()
             "确认",
             4  -- 4 = Yes/No
         )
-        if result ~= 6 then  -- 6 = Yes
+        if result ~= 6 then  -- 6 = Yes. If user clicked "No" or closed dialog
             is_open = true  -- 保持打开
+            reaper.defer(M.loop)  -- [FIX] CRITICAL: Restart the loop immediately!
             return
         end
     end
@@ -840,6 +1468,9 @@ function M.cleanup()
     is_open = false
     is_modified = false
     selected_sector_index = nil
+    selected_slot_index = nil  -- 清理选中的插槽索引
+    action_list_clipper = nil  -- 清理 ListClipper 缓存
+    fx_list_clipper = nil  -- 清理 FX ListClipper 缓存
     
     -- reaper.ShowConsoleMsg("设置编辑器已关闭\n")
 end
@@ -858,6 +1489,66 @@ function M.show()
 end
 
 -- ============================================================================
+-- Action 数据管理
+-- ============================================================================
+
+-- 加载所有 Reaper Actions（缓存）
+-- @return table: Action 列表，每个元素包含 {command_id, name}
+function M.load_actions()
+    if actions_cache then
+        return actions_cache
+    end
+    
+    actions_cache = {}
+    local i = 0
+    
+    -- 使用 CF_EnumerateActions 枚举所有 Actions
+    while true do
+        local command_id, name = reaper.CF_EnumerateActions(0, i, '')
+        if not command_id or command_id <= 0 then
+            break
+        end
+        table.insert(actions_cache, {
+            command_id = command_id,
+            name = name or ""
+        })
+        i = i + 1
+    end
+    
+    -- 按名称排序
+    table.sort(actions_cache, function(a, b)
+        return (a.name or "") < (b.name or "")
+    end)
+    
+    return actions_cache
+end
+
+-- 过滤 Actions
+-- @param search_text string: 搜索文本
+-- @return table: 过滤后的 Action 列表
+function M.filter_actions(search_text)
+    if not actions_cache then
+        M.load_actions()
+    end
+    
+    if not search_text or search_text == "" then
+        return actions_cache
+    end
+    
+    local filtered = {}
+    local lower_search = string.lower(search_text)
+    
+    for _, action in ipairs(actions_cache) do
+        local name = action.name or ""
+        if string.find(string.lower(name), lower_search, 1, true) then
+            table.insert(filtered, action)
+        end
+    end
+    
+    return filtered
+end
+
+-- ============================================================================
 -- 辅助函数
 -- ============================================================================
 
@@ -871,9 +1562,10 @@ function M.draw_simple_preview(draw_list, ctx, center_x, center_y, preview_confi
     local inner_radius = preview_config.menu.inner_radius
     local outer_radius = preview_config.menu.outer_radius
     local total_sectors = #preview_config.sectors
-    local gap_radians = 0.04  -- 间隙角度（与 wheel.lua 一致）
+    -- 保持与 wheel.lua 一致的间隙逻辑
+    local gap_radians = (styles.sizes.gap_size or 3.0) / outer_radius
     
-    -- 绘制所有扇区（使用真正的透明间隙）
+    -- 1. 绘制所有扇区
     for i, sector in ipairs(preview_config.sectors) do
         local is_selected = (selected_index == i)
         
@@ -881,19 +1573,17 @@ function M.draw_simple_preview(draw_list, ctx, center_x, center_y, preview_confi
         local rotation_offset = -math.pi / 2
         local start_angle, end_angle = math_utils.get_sector_angles(i, total_sectors, rotation_offset)
         
-        -- 应用间隙（缩小扇区角度，创建真正的透明间隙）
+        -- 应用间隙
         local draw_start = start_angle + gap_radians
         local draw_end = end_angle - gap_radians
         
-        -- 获取颜色
+        -- 获取颜色 (强制使用 styles 中的深色主题逻辑)
         local color = styles.get_sector_color_u32(sector, is_selected, preview_config)
         
-        -- 绘制扇形（使用缩小后的角度，高分辨率）
-        local base_segments = 64  -- 预览使用稍低的分辨率（64），但仍保持平滑
+        -- 绘制扇形
+        local base_segments = 64
         local angle_span = draw_end - draw_start
-        if angle_span < 0 then
-            angle_span = angle_span + 2 * math.pi
-        end
+        if angle_span < 0 then angle_span = angle_span + 2 * math.pi end
         local sector_segments = math.max(16, math.floor(base_segments * angle_span / (2 * math.pi)))
         
         for j = 0, sector_segments - 1 do
@@ -913,45 +1603,63 @@ function M.draw_simple_preview(draw_list, ctx, center_x, center_y, preview_confi
                 color)
         end
         
-        -- 绘制扇区文本和图标（修复预览显示问题）
+        -- 绘制扇区边缘高光 (模拟 wheel.lua 效果)
+        if is_selected then
+             local rim_color = styles.correct_rgba_to_u32(styles.colors.sector_rim_light)
+             for j = 0, 31 do -- 简化段数
+                local a1 = draw_start + angle_span * (j / 32)
+                local a2 = draw_start + angle_span * ((j + 1) / 32)
+                local x1, y1 = math_utils.polar_to_cartesian(a1, outer_radius - 1)
+                local x2, y2 = math_utils.polar_to_cartesian(a2, outer_radius - 1)
+                reaper.ImGui_DrawList_AddLine(draw_list, center_x + x1, center_y + y1, center_x + x2, center_y + y2, rim_color, 2.0)
+            end
+        end
+        -- 绘制文本
         local text_radius = outer_radius * (styles.sizes.text_radius_ratio or 0.65)
         local center_angle = (start_angle + end_angle) / 2
-        local text_x, text_y = math_utils.polar_to_cartesian(center_angle, text_radius)
-        text_x = center_x + text_x
-        text_y = center_y + text_y
+        local tx, ty = math_utils.polar_to_cartesian(center_angle, text_radius)
+        local display_text = (sector.name or "")
         
-        -- 组合文本：图标 + 名称
-        local display_text = (sector.icon or "") .. "\n" .. (sector.name or "")
+        local text_color = is_selected and styles.correct_rgba_to_u32(styles.colors.text_active) or styles.correct_rgba_to_u32(styles.colors.text_normal)
+        local shadow_color = styles.correct_rgba_to_u32(styles.colors.text_shadow)
         
-        -- 获取文本颜色
-        local text_color = styles.get_text_color_u32()
+        local text_w, text_h = reaper.ImGui_CalcTextSize(ctx, display_text)
+        local text_x = center_x + tx - text_w / 2
+        local text_y = center_y + ty - text_h / 2
         
-        -- 计算文本尺寸用于居中
-        local text_width, text_height = reaper.ImGui_CalcTextSize(ctx, display_text)
-        
-        -- 绘制居中文本（带阴影）
-        im_utils.draw_text_with_shadow(draw_list, ctx, 
-            text_x - text_width / 2, 
-            text_y - text_height / 2,
-            display_text, text_color, 1)
+        -- 绘制阴影和文本
+        reaper.ImGui_DrawList_AddText(draw_list, text_x + 1, text_y + 1, shadow_color, display_text)
+        reaper.ImGui_DrawList_AddText(draw_list, text_x, text_y, text_color, display_text)
     end
     
-    -- 绘制中心环（甜甜圈效果，与 wheel.lua 一致，去荧光化）
-    local outer_center_radius = inner_radius
-    local inner_center_radius = outer_center_radius - 6  -- 6 像素宽的环
-    -- 使用灰色系颜色（#3f3c40 相关）
-    local dark_grey = im_utils.color_to_u32(63, 60, 64, 255)  -- 深灰色 (#3f3c40)
-    local inner_grey = im_utils.color_to_u32(50, 47, 51, 255)  -- 内圆灰色（稍深）
-    local subtle_border = styles.get_glass_border_u32()  -- 深色边框
+    -- 2. 绘制中心圆 (甜甜圈效果 - 关键修正部分)
+    local center_outer = inner_radius
+    local center_inner = center_outer - 6
+    local dark_grey = styles.correct_rgba_to_u32({63, 60, 64, 255})
+    local inner_grey = styles.correct_rgba_to_u32({50, 47, 51, 255})
     
-    -- 1. 绘制外圆（深灰色，半径 = InnerRadius）
-    reaper.ImGui_DrawList_AddCircleFilled(draw_list, center_x, center_y, outer_center_radius, dark_grey, 0)
+    reaper.ImGui_DrawList_AddCircleFilled(draw_list, center_x, center_y, center_outer, dark_grey, 0)
+    reaper.ImGui_DrawList_AddCircleFilled(draw_list, center_x, center_y, center_inner, inner_grey, 0)
     
-    -- 2. 绘制内圆（稍深的灰色，半径 = InnerRadius - 6px）
-    reaper.ImGui_DrawList_AddCircleFilled(draw_list, center_x, center_y, inner_center_radius, inner_grey, 0)
+    -- 3. 绘制中心 Pin 菱形 (关键修正部分)
+    local pin_size = styles.sizes.pin_size or 6
+    local pin_color = styles.correct_rgba_to_u32(styles.colors.pin_inactive) -- 预览默认为未 Pin 状态
+    local pin_shadow = styles.correct_rgba_to_u32(styles.colors.pin_shadow)
     
-    -- 不绘制边框线条（隐藏所有线条，只保留填充）
-    -- 3. 不绘制外环（与主轮盘一致，隐藏线条）
+    -- 阴影
+    reaper.ImGui_DrawList_AddQuadFilled(draw_list, 
+        center_x, center_y - pin_size + 2,
+        center_x + pin_size + 2, center_y + 2,
+        center_x, center_y + pin_size + 4,
+        center_x - pin_size + 2, center_y + 2,
+        pin_shadow)
+    -- 本体
+    reaper.ImGui_DrawList_AddQuadFilled(draw_list, 
+        center_x, center_y - pin_size,
+        center_x + pin_size, center_y,
+        center_x, center_y + pin_size,
+        center_x - pin_size, center_y,
+        pin_color)
 end
 
 -- 深拷贝配置表
