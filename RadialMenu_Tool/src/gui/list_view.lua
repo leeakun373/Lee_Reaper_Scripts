@@ -129,7 +129,10 @@ function M.draw_grid_buttons(ctx, sector_data)
 end
 
 function M.draw_single_button(ctx, slot, index)
-    local label = slot and slot.name or ""
+    -- [FIX] Determine if this is a REAL configured slot
+    local is_configured = slot and slot.type ~= "empty"
+    
+    local label = is_configured and slot.name or ""
     
     -- ============================================================
     -- 颜色优化区域 (High Contrast)
@@ -138,7 +141,8 @@ function M.draw_single_button(ctx, slot, index)
     local col_normal, col_hover, col_active, col_border
     local text_color = styles.correct_rgba_to_u32(styles.colors.text_normal)
     
-    if slot then
+    -- [FIX] Use is_configured instead of checking slot directly
+    if is_configured then
         -- [有功能的按钮]
         -- 稍微亮一点的灰色，使其从黑色背景中凸显出来
         col_normal = styles.correct_rgba_to_u32({60, 62, 66, 255}) 
@@ -172,8 +176,17 @@ function M.draw_single_button(ctx, slot, index)
     reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FrameRounding(), 4)
     reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_FrameBorderSize(), 1) -- 关键：开启按钮描边
     
-    -- 检测拖拽开始
-    if slot and reaper.ImGui_IsItemActive(ctx) and reaper.ImGui_IsMouseDragging(ctx, 0) then
+    -- [FIX] Update Click Logic to use is_configured
+    -- 先绘制按钮，这样 IsItemActive 和 IsMouseDragging 才能正确工作
+    if reaper.ImGui_Button(ctx, label .. "##Slot" .. index, SLOT_WIDTH, SLOT_HEIGHT) then
+        if is_configured and not dragging_slot then
+            M.handle_item_click(slot)
+        end
+    end
+    
+    -- [FIX] Update Drag Logic to use is_configured
+    -- 拖拽检测必须在按钮绘制之后，因为 IsItemActive 需要按钮状态
+    if is_configured and reaper.ImGui_IsItemActive(ctx) and reaper.ImGui_IsMouseDragging(ctx, 0) then
         -- 检查是否真的在拖拽（移动距离超过阈值）
         local mouse_delta_x, mouse_delta_y = reaper.ImGui_GetMouseDelta(ctx, 0)
         local drag_distance = math.sqrt(mouse_delta_x * mouse_delta_x + mouse_delta_y * mouse_delta_y)
@@ -188,19 +201,11 @@ function M.draw_single_button(ctx, slot, index)
         end
     end
     
-    -- 按钮点击（仅在未拖拽时触发）
-    if reaper.ImGui_Button(ctx, label .. "##Slot" .. index, SLOT_WIDTH, SLOT_HEIGHT) then
-        -- 只有在没有拖拽的情况下才触发点击
-        if slot and not dragging_slot then
-            M.handle_item_click(slot)
-        end
-    end
-    
     reaper.ImGui_PopStyleVar(ctx, 2)
     reaper.ImGui_PopStyleColor(ctx, 5)
     
-    -- Tooltip（仅在未拖拽时显示）
-    if slot and reaper.ImGui_IsItemHovered(ctx) and not dragging_slot then
+    -- [FIX] Update Tooltip Logic to use is_configured
+    if is_configured and reaper.ImGui_IsItemHovered(ctx) and not dragging_slot then
         local tooltip = slot.description
         if not tooltip or tooltip == "" then tooltip = slot.name end
         if tooltip and tooltip ~= "" then

@@ -4,20 +4,34 @@
 
 local Constants = {}
 
+-- Version info
+Constants.VERSION = "10.2"
+Constants.VERSION_DATE = "2025-12-04"
+Constants.VERSION_DESC = "Enhanced UX: Alias system, Smart init, Editable combos"
+
 -- File paths
 Constants.CSV_DB_FILE    = "ucs_data.csv"
 Constants.CSV_ALIAS_FILE = "ucs_alias.csv"
 Constants.SEPARATOR      = "_"
 Constants.DEFAULT_UCS_MODE = false 
 
+-- Safe dominant keywords (materials with minimal ambiguity)
+-- Only these material keywords receive bonus points when matching categories
+Constants.SAFE_DOMINANT_KEYWORDS = {
+    ["water"] = true, ["liquid"] = true, ["ice"] = true,
+    ["glass"] = true, ["ceramic"] = true, ["electricity"] = true,
+    ["mud"] = true, ["dirt"] = true, ["stone"] = true, ["rock"] = true
+}
+
 -- Smart matching weights
 Constants.WEIGHTS = {
-    CATEGORY_EXACT = 50,
-    CATEGORY_PART  = 10,
-    SUBCATEGORY    = 60,
+    CATEGORY_EXACT = 20,       -- Base score for exact category match
+    CATEGORY_PART  = 5,        -- Partial category match
+    SUBCATEGORY    = 60,       -- Subcategory remains the main force
     SYNONYM        = 40,
     DESCRIPTION    = 5,
-    PERFECT_BONUS  = 30
+    PERFECT_BONUS  = 30,
+    SAFE_DOMINANT_BONUS = 50   -- Bonus for safe dominant keywords (20 base + 50 bonus = 70, exceeds subcategory 60)
 }
 Constants.MATCH_THRESHOLD = 15
 
@@ -45,6 +59,7 @@ Constants.COLORS = {
     BTN_REFRESH   = 0x666666AA,
     BTN_APPLY     = 0x2E7D32FF,
     BTN_AUTO      = 0xFFB300AA,
+    BTN_ALIAS     = 0x9C27B0AA,  -- Purple for Alias button
     
     BTN_MODE_ON   = 0x7E57C2AA, 
     BTN_MODE_OFF  = 0x555555AA, 

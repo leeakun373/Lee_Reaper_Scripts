@@ -1,11 +1,150 @@
 {
+  "sectors": [
+    {
+      "name": "Actions",
+      "slots": [
+        {
+          "type": "action",
+          "name": "Peak 0",
+          "data": {
+            "command_id": 40108
+          }
+        },
+        {
+          "type": "empty"
+        },
+        {
+          "type": "empty"
+        },
+        {
+          "type": "action",
+          "name": "Normalize Items",
+          "data": {
+            "command_id": 42460
+          }
+        },
+        {
+          "type": "empty"
+        },
+        {
+          "type": "empty"
+        },
+        {
+          "type": "action",
+          "name": "Reposition items",
+          "data": {
+            "command_id": 53357
+          }
+        },
+        {
+          "type": "empty"
+        },
+        {
+          "type": "empty"
+        }
+      ],
+      "id": 1,
+      "color": [
+        70,
+        130,
+        180,
+        200
+      ],
+      "icon": "⚡"
+    },
+    {
+      "name": "FX",
+      "slots": [
+        {
+          "type": "fx",
+          "name": "FUEL",
+          "data": {
+            "fx_name": "VST3: FUEL (Musik Hack)"
+          }
+        },
+        {
+          "type": "empty"
+        },
+        {
+          "type": "empty"
+        },
+        {
+          "type": "empty"
+        },
+        {
+          "type": "empty"
+        },
+        {
+          "type": "empty"
+        },
+        {
+          "type": "empty"
+        },
+        {
+          "type": "empty"
+        },
+        {
+          "type": "empty"
+        }
+      ],
+      "id": 2,
+      "color": [
+        138,
+        43,
+        226,
+        200
+      ],
+      "icon": "🎛️"
+    },
+    {
+      "name": "Scripts",
+      "slots": [
+        {
+          "type": "empty"
+        },
+        {
+          "type": "empty"
+        },
+        {
+          "type": "empty"
+        },
+        {
+          "type": "empty"
+        },
+        {
+          "type": "empty"
+        },
+        {
+          "type": "empty"
+        },
+        {
+          "type": "empty"
+        },
+        {
+          "type": "empty"
+        },
+        {
+          "type": "empty"
+        }
+      ],
+      "id": 3,
+      "color": [
+        220,
+        20,
+        60,
+        200
+      ],
+      "icon": "📜"
+    }
+  ],
   "menu": {
-    "outer_radius": 110,
-    "inner_radius": 30,
-    "sector_border_width": 2,
     "hover_brightness": 1.3,
-    "animation_speed": 0.2,
-    "max_slots_per_sector": 12
+    "max_slots_per_sector": 9,
+    "inner_radius": 30,
+    "outer_radius": 100,
+    "sector_border_width": 2,
+    "hover_to_open": true,
+    "animation_speed": 0.2
   },
   "version": "1.0.0",
   "colors": {
@@ -15,10 +154,22 @@
       0,
       150
     ],
-    "center_circle": [
-      50,
-      50,
-      50,
+    "background": [
+      30,
+      30,
+      30,
+      240
+    ],
+    "hover_overlay": [
+      255,
+      255,
+      255,
+      50
+    ],
+    "text": [
+      255,
+      255,
+      255,
       255
     ],
     "border": [
@@ -27,106 +178,11 @@
       100,
       200
     ],
-    "background": [
-      30,
-      30,
-      30,
-      240
-    ],
-    "text": [
-      255,
-      255,
-      255,
+    "center_circle": [
+      50,
+      50,
+      50,
       255
-    ],
-    "hover_overlay": [
-      255,
-      255,
-      255,
-      50
     ]
-  },
-  "sectors": [
-    {
-      "color": [
-        70,
-        130,
-        180,
-        200
-      ],
-      "slots": [],
-      "name": "Actions",
-      "icon": "⚡",
-      "id": 1
-    },
-    {
-      "color": [
-        138,
-        43,
-        226,
-        200
-      ],
-      "slots": [
-        {
-          "name": "111",
-          "data": {
-            "command_id": 0
-          },
-          "description": "",
-          "type": "action"
-        }
-      ],
-      "name": "FX",
-      "icon": "🎛️",
-      "id": 2
-    },
-    {
-      "color": [
-        220,
-        20,
-        60,
-        200
-      ],
-      "slots": [],
-      "name": "Scripts",
-      "icon": "📜",
-      "id": 3
-    },
-    {
-      "color": [
-        34,
-        139,
-        34,
-        200
-      ],
-      "slots": [],
-      "name": "Tracks",
-      "icon": "🎵",
-      "id": 4
-    },
-    {
-      "color": [
-        255,
-        140,
-        0,
-        200
-      ],
-      "slots": [],
-      "name": "Markers",
-      "icon": "🏷️",
-      "id": 5
-    },
-    {
-      "color": [
-        128,
-        128,
-        128,
-        200
-      ],
-      "slots": [],
-      "name": "Tools",
-      "icon": "🔧",
-      "id": 6
-    }
-  ]
+  }
 }

@@ -240,16 +240,20 @@ function M.validate(config)
         
         -- 验证槽位
         for j, slot in ipairs(sector.slots) do
-            if not slot.type or (slot.type ~= "action" and slot.type ~= "fx" and slot.type ~= "script") then
-                return false, string.format("扇区 %d 槽位 %d 的 type 必须是 'action', 'fx' 或 'script'", i, j)
+            -- [FIX] Allow "empty" type
+            if not slot.type or (slot.type ~= "action" and slot.type ~= "fx" and slot.type ~= "script" and slot.type ~= "empty") then
+                return false, string.format("扇区 %d 槽位 %d 的 type 无效: %s", i, j, tostring(slot.type))
             end
             
-            if not slot.name or type(slot.name) ~= "string" then
-                return false, string.format("扇区 %d 槽位 %d 的 name 必须是字符串", i, j)
-            end
-            
-            if not slot.data or type(slot.data) ~= "table" then
-                return false, string.format("扇区 %d 槽位 %d 的 data 必须是表", i, j)
+            -- [FIX] Skip detailed validation for empty slots
+            if slot.type ~= "empty" then
+                if not slot.name or type(slot.name) ~= "string" then
+                    return false, string.format("扇区 %d 槽位 %d 的 name 必须是字符串", i, j)
+                end
+                
+                if not slot.data or type(slot.data) ~= "table" then
+                    return false, string.format("扇区 %d 槽位 %d 的 data 必须是表", i, j)
+                end
             end
         end
     end

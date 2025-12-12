@@ -26,6 +26,19 @@ function DataLoader.LoadUserAlias(ucs_db, script_path, csv_alias_file, helpers)
     table.sort(ucs_db.alias_list, function(a, b) return #a.key > #b.key end)
 end
 
+function DataLoader.SaveUserAlias(script_path, csv_alias_file, source, target)
+    local path = script_path .. csv_alias_file
+    local file = io.open(path, "a")  -- Append mode
+    if not file then 
+        return false, "Failed to open alias file for writing"
+    end
+    
+    -- Write new alias entry (source and target already cleaned)
+    file:write(source .. "," .. target .. "\n")
+    file:close()
+    return true, "Alias saved successfully"
+end
+
 function DataLoader.LoadUCSData(ucs_db, app_state, script_path, csv_db_file, csv_alias_file, helpers)
     local path = script_path .. csv_db_file
     local file = io.open(path, "r")
@@ -46,14 +59,23 @@ function DataLoader.LoadUCSData(ucs_db, app_state, script_path, csv_db_file, csv
     
     local cat_seen_zh = {}
     local cat_seen_en = {}
-    local is_header = true
 
     for line in file:lines() do
-        if is_header then
-            is_header = false
-        else
-            local cols = helpers.ParseCSVLine(line)
-            if #cols >= 8 then
+        local cols = helpers.ParseCSVLine(line)
+        
+        -- Skip header/metadata rows:
+        -- 1. Lines containing "UCS v" in first column (e.g., ",UCS v8.2.1")
+        -- 2. Lines where first column equals "Category" (the actual header)
+        -- 3. Empty lines or lines with insufficient columns
+        local first_col = cols[1] or ""
+        local is_invalid_row = (
+            first_col:match("UCS") or 
+            first_col == "Category" or 
+            first_col == "" or
+            #cols < 8
+        )
+        
+        if not is_invalid_row and #cols >= 8 then
                 local cat_en_raw = cols[1]  -- 原始英文字符串
                 local sub_en_raw = cols[2]  -- 原始英文字符串
                 local d = {
@@ -127,7 +149,6 @@ function DataLoader.LoadUCSData(ucs_db, app_state, script_path, csv_db_file, csv
                         }
                     end
                 end
-            end
         end
     end
     file:close()
@@ -140,5 +161,9 @@ function DataLoader.LoadUCSData(ucs_db, app_state, script_path, csv_db_file, csv
 end
 
 return DataLoader
+
+
+
+
 
 

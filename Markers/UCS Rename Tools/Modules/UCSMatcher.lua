@@ -5,7 +5,7 @@
 
 local UCSMatcher = {}
 
-function UCSMatcher.FindBestUCS(user_input, ucs_db, weights, match_threshold, downgrade_words, helpers)
+function UCSMatcher.FindBestUCS(user_input, ucs_db, weights, match_threshold, downgrade_words, helpers, safe_dominant_keywords)
     if not user_input or user_input == "" then return nil end
     
     -- 1. Pre-processing: Phrase Substitution using Alias List
@@ -36,10 +36,16 @@ function UCSMatcher.FindBestUCS(user_input, ucs_db, weights, match_threshold, do
                 local is_weak = downgrade_words[word] == true
                 
                 -- Score Logic
+                -- A. Category Match Logic (with Safe Dominant Bonus)
                 for _, k in ipairs(item.cat_en) do
                     if k == word then 
                         current_score = current_score + weights.CATEGORY_EXACT
                         cat_hit = true
+                        
+                        -- Apply bonus for safe dominant keywords (e.g., water, glass, ice)
+                        if safe_dominant_keywords and safe_dominant_keywords[word] then
+                            current_score = current_score + weights.SAFE_DOMINANT_BONUS
+                        end
                     elseif k:find(word, 1, true) then 
                         current_score = current_score + weights.CATEGORY_PART 
                     end
@@ -96,5 +102,6 @@ function UCSMatcher.FindBestUCS(user_input, ucs_db, weights, match_threshold, do
 end
 
 return UCSMatcher
+
 
 

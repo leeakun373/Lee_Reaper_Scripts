@@ -60,7 +60,7 @@ function ProjectActions.ApplySingleName(item)
     return false
 end
 
-function ProjectActions.ReloadProjectData(app_state, ucs_db, name_processor, ucs_optional_fields)
+function ProjectActions.ReloadProjectData(app_state, ucs_db, name_processor, ucs_optional_fields, ucs_matcher, weights, match_threshold, downgrade_words, helpers, safe_dominant_keywords)
     app_state.merged_list = {}
     local ret, num_markers, num_regions = r.CountProjectMarkers(0)
     
@@ -122,8 +122,29 @@ function ProjectActions.ReloadProjectData(app_state, ucs_db, name_processor, ucs
                     
                     -- 更新最终名称（应该和 current_name 相同）
                     name_processor.UpdateFinalName(item, app_state, ucs_optional_fields)
+                else
+                    -- 智能初始化：如果未解析出 UCS 格式，且为英文文件名，尝试自动匹配
+                    if ucs_matcher and weights and match_threshold and downgrade_words and helpers and safe_dominant_keywords then
+                        -- 检查是否为英文文件名（不包含中文字符）
+                        local is_english = not name:match("[\128-\255]")
+                        
+                        if is_english and name ~= "" then
+                            -- 自动匹配
+                            local match = ucs_matcher.FindBestUCS(
+                                name, ucs_db, weights, match_threshold, 
+                                downgrade_words, helpers, safe_dominant_keywords
+                            )
+                            
+                            if match then
+                                item.ucs_cat_id = match.id
+                                item.cat_zh_sel = match.raw_cat_zh
+                                item.sub_zh_sel = match.raw_sub_zh
+                                item.match_type = "auto_init"
+                                name_processor.UpdateFinalName(item, app_state, ucs_optional_fields)
+                            end
+                        end
+                    end
                 end
-                -- 如果parsed为nil，说明名称不符合UCS格式，保持原样（所有字段保持初始值）
             end
             
             table.insert(app_state.merged_list, item)
@@ -134,7 +155,7 @@ function ProjectActions.ReloadProjectData(app_state, ucs_db, name_processor, ucs
     end
 end
 
-function ProjectActions.ActionSmartPaste(app_state, ucs_db, name_processor, ucs_matcher, weights, match_threshold, downgrade_words, helpers, ucs_optional_fields)
+function ProjectActions.ActionSmartPaste(app_state, ucs_db, name_processor, ucs_matcher, weights, match_threshold, downgrade_words, helpers, ucs_optional_fields, safe_dominant_keywords)
     local clipboard = r.CF_GetClipboard()
     if clipboard == "" then return end
     local match_count = 0
@@ -154,7 +175,7 @@ function ProjectActions.ActionSmartPaste(app_state, ucs_db, name_processor, ucs_
                     local item = app_state.merged_list[idx]
                     item.trans_name = content
                     if #ucs_db.flat_list > 0 then 
-                        name_processor.AutoMatchItem(item, ucs_db, app_state, ucs_optional_fields, ucs_matcher, weights, match_threshold, downgrade_words, helpers)
+                        name_processor.AutoMatchItem(item, ucs_db, app_state, ucs_optional_fields, ucs_matcher, weights, match_threshold, downgrade_words, helpers, safe_dominant_keywords)
                     else 
                         name_processor.UpdateFinalName(item, app_state, ucs_optional_fields)
                     end
@@ -166,7 +187,7 @@ function ProjectActions.ActionSmartPaste(app_state, ucs_db, name_processor, ucs_
     app_state.status_msg = string.format("Paste: Updated %d items.", match_count)
 end
 
-function ProjectActions.ActionApply(app_state, project_actions, name_processor, ucs_optional_fields, ucs_db)
+function ProjectActions.ActionApply(app_state, project_actions, name_processor, ucs_optional_fields, ucs_db, ucs_matcher, weights, match_threshold, downgrade_words, helpers, safe_dominant_keywords)
     r.Undo_BeginBlock()
     local update_count = 0
     local current_map = {}
@@ -191,7 +212,7 @@ function ProjectActions.ActionApply(app_state, project_actions, name_processor, 
     end
     r.Undo_EndBlock("Batch Translate Markers", -1)
     r.UpdateArrange()
-    project_actions.ReloadProjectData(app_state, ucs_db, name_processor, ucs_optional_fields)
+    project_actions.ReloadProjectData(app_state, ucs_db, name_processor, ucs_optional_fields, ucs_matcher, weights, match_threshold, downgrade_words, helpers, safe_dominant_keywords)
 end
 
 function ProjectActions.ActionCopyOriginal(app_state)

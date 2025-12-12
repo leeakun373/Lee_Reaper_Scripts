@@ -17,13 +17,15 @@ function GUI.Loop(ctx, modules)
     local UCSMatcher = modules.UCSMatcher
     local ucs_db = modules.ucs_db
     local app_state = modules.app_state
+    local script_path = modules.script_path
     
     -- Apply modern theme
     local pop_vars, pop_cols = Theme.PushModernSlateTheme(ctx)
     
     r.ImGui_SetNextWindowSize(ctx, 900, 600, r.ImGui_Cond_FirstUseEver())
     
-    local visible, open = r.ImGui_Begin(ctx, 'UCS Toolkit', true, r.ImGui_WindowFlags_None())
+    local window_title = string.format('UCS Toolkit v%s - %s', Constants.VERSION, Constants.VERSION_DESC)
+    local visible, open = r.ImGui_Begin(ctx, window_title, true, r.ImGui_WindowFlags_None())
     
     if visible then
         -- [Top Toolbar: Buttons Only]
@@ -35,12 +37,34 @@ function GUI.Loop(ctx, modules)
         if Theme.BtnNormal(ctx, "Paste") then 
             ProjectActions.ActionSmartPaste(app_state, ucs_db, NameProcessor, UCSMatcher, 
                 Constants.WEIGHTS, Constants.MATCH_THRESHOLD, Constants.DOWNGRADE_WORDS, 
-                Helpers, Constants.UCS_OPTIONAL_FIELDS) 
+                Helpers, Constants.UCS_OPTIONAL_FIELDS, Constants.SAFE_DOMINANT_KEYWORDS) 
         end
         r.ImGui_SameLine(ctx)
         
         if Theme.BtnNormal(ctx, "Refresh") then 
-            ProjectActions.ReloadProjectData(app_state, ucs_db, NameProcessor, Constants.UCS_OPTIONAL_FIELDS) 
+            ProjectActions.ReloadProjectData(app_state, ucs_db, NameProcessor, Constants.UCS_OPTIONAL_FIELDS,
+                UCSMatcher, Constants.WEIGHTS, Constants.MATCH_THRESHOLD, Constants.DOWNGRADE_WORDS, Helpers, Constants.SAFE_DOMINANT_KEYWORDS) 
+        end
+        r.ImGui_SameLine(ctx)
+        
+        if Theme.BtnAlias(ctx, "+ Alias") then
+            r.ImGui_OpenPopup(ctx, "alias_editor_popup")
+            -- Initialize alias input fields
+            if not app_state.alias_source then app_state.alias_source = "" end
+            if not app_state.alias_target then app_state.alias_target = "" end
+            -- Smart prefill from selected row if available
+            if app_state.selected_row_idx and app_state.merged_list[app_state.selected_row_idx] then
+                local item = app_state.merged_list[app_state.selected_row_idx]
+                app_state.alias_source = item.trans_name or ""
+                -- Try to get subcategory as target
+                if item.sub_zh_sel and item.sub_zh_sel ~= "" then
+                    app_state.alias_target = item.sub_zh_sel
+                elseif item.ucs_cat_id and item.ucs_cat_id ~= "" then
+                    app_state.alias_target = item.ucs_cat_id
+                else
+                    app_state.alias_target = ""
+                end
+            end
         end
         
         r.ImGui_SameLine(ctx)
@@ -136,7 +160,7 @@ function GUI.Loop(ctx, modules)
             local table_id = app_state.use_ucs_mode and 'table_ucs_v10' or 'table_simple_v10'
             local t_flags = r.ImGui_TableFlags_RowBg() | r.ImGui_TableFlags_Borders() | 
                            r.ImGui_TableFlags_Resizable() | r.ImGui_TableFlags_ScrollY() | 
-                           r.ImGui_TableFlags_SizingStretchProp()
+                           r.ImGui_TableFlags_SizingFixedFit()
             
             -- Calculate column count dynamically
             local base_cols = app_state.use_ucs_mode and 7 or 5
@@ -163,31 +187,28 @@ function GUI.Loop(ctx, modules)
                 end
                 
                 local orig_header = (app_state.display_language == "en") and "Original" or "原名"
-                r.ImGui_TableSetupColumn(ctx, orig_header, r.ImGui_TableColumnFlags_WidthStretch(), 2.0)
+                r.ImGui_TableSetupColumn(ctx, orig_header, r.ImGui_TableColumnFlags_WidthFixed(), 150)
                 local replace_header = app_state.use_ucs_mode and 'FXName' or 'Replace'
-                r.ImGui_TableSetupColumn(ctx, replace_header, r.ImGui_TableColumnFlags_WidthStretch(), 1.5)
+                r.ImGui_TableSetupColumn(ctx, replace_header, r.ImGui_TableColumnFlags_WidthFixed(), 120)
                 
                 -- Optional field columns
                 if app_state.use_ucs_mode then
                     if app_state.field_visibility.vendor_category then
-                        r.ImGui_TableSetupColumn(ctx, 'VC', r.ImGui_TableColumnFlags_WidthFixed() | r.ImGui_TableColumnFlags_NoResize(), 70)
+                        r.ImGui_TableSetupColumn(ctx, 'VC', r.ImGui_TableColumnFlags_WidthFixed(), 70)
                     end
                     if app_state.field_visibility.creator_id then
-                        r.ImGui_TableSetupColumn(ctx, 'CID', r.ImGui_TableColumnFlags_WidthFixed() | r.ImGui_TableColumnFlags_NoResize(), 70)
+                        r.ImGui_TableSetupColumn(ctx, 'CID', r.ImGui_TableColumnFlags_WidthFixed(), 70)
                     end
                     if app_state.field_visibility.source_id then
-                        r.ImGui_TableSetupColumn(ctx, 'SID', r.ImGui_TableColumnFlags_WidthFixed() | r.ImGui_TableColumnFlags_NoResize(), 70)
+                        r.ImGui_TableSetupColumn(ctx, 'SID', r.ImGui_TableColumnFlags_WidthFixed(), 70)
                     end
                     if app_state.field_visibility.user_data then
-                        r.ImGui_TableSetupColumn(ctx, 'UD', r.ImGui_TableColumnFlags_WidthFixed() | r.ImGui_TableColumnFlags_NoResize(), 70)
+                        r.ImGui_TableSetupColumn(ctx, 'UD', r.ImGui_TableColumnFlags_WidthFixed(), 70)
                     end
                 end
                 
-                if app_state.use_ucs_mode then
-                    r.ImGui_TableSetupColumn(ctx, 'Preview', r.ImGui_TableColumnFlags_WidthStretch(), 1.2)
-                else
-                    r.ImGui_TableSetupColumn(ctx, 'Preview', r.ImGui_TableColumnFlags_WidthStretch(), 1.5)
-                end
+                -- Preview column - takes up all remaining space
+                r.ImGui_TableSetupColumn(ctx, 'Preview', r.ImGui_TableColumnFlags_WidthStretch(), 3.0)
                 
                 -- [Table Headers with Fill/Clear buttons]
                 r.ImGui_TableNextRow(ctx, r.ImGui_TableRowFlags_Headers())
@@ -334,6 +355,7 @@ function GUI.Loop(ctx, modules)
                         r.ImGui_PushStyleColor(ctx, r.ImGui_Col_Text(), id_col) -- 文字颜色
                         if r.ImGui_Button(ctx, tostring(item.id), -1, 0) then
                             ProjectActions.JumpToMarkerOrRegion(item)
+                            app_state.selected_row_idx = i  -- Track selected row for Alias prefill
                         end
                         if r.ImGui_IsItemHovered(ctx) then
                             local tooltip = string.format("点击跳转到 %s #%d", item.type_str, item.id)
@@ -383,68 +405,89 @@ function GUI.Loop(ctx, modules)
                                 cat_selected = item.cat_zh_sel
                             end
                             
-                            if r.ImGui_BeginCombo(ctx, "##cat", cat_display) then
-                                r.ImGui_SetNextItemWidth(ctx, -1)
-                                local cat_filter_changed, new_filter = r.ImGui_InputText(ctx, "##cat_filter", item.cat_input or "", r.ImGui_InputTextFlags_AutoSelectAll())
-                                if cat_filter_changed then
+                            -- Editable Category: InputText + ArrowButton + Popup
+                            r.ImGui_SetNextItemWidth(ctx, -25)  -- Leave space for arrow button
+                            local cat_changed, new_cat = r.ImGui_InputText(ctx, "##cat_input_" .. i, cat_display or "", r.ImGui_InputTextFlags_None())
+                            if cat_changed then
+                                -- User typed directly - update the value
+                                if app_state.display_language == "en" then
+                                    -- Convert EN input to ZH for storage
+                                    if ucs_db.en_to_zh[new_cat] then
+                                        local first_sub_key = next(ucs_db.en_to_zh[new_cat])
+                                        if first_sub_key and ucs_db.en_to_zh[new_cat][first_sub_key] then
+                                            item.cat_zh_sel = ucs_db.en_to_zh[new_cat][first_sub_key].cat
+                                        end
+                                    else
+                                        item.cat_zh_sel = new_cat  -- Store as-is if no match
+                                    end
+                                else
+                                    item.cat_zh_sel = new_cat
+                                end
+                                item.sub_zh_sel = ""  -- Clear subcategory
+                                item.ucs_cat_id = ""
+                                NameProcessor.UpdateFinalName(item, app_state, Constants.UCS_OPTIONAL_FIELDS)
+                            end
+                            
+                            -- Arrow button to open dropdown
+                            r.ImGui_SameLine(ctx, 0, 2)
+                            local cat_popup_id = "cat_popup_" .. tostring(i)
+                            if r.ImGui_ArrowButton(ctx, "##cat_arrow_" .. i, r.ImGui_Dir_Down()) then
+                                r.ImGui_OpenPopup(ctx, cat_popup_id)
+                                item.cat_input = cat_display or ""  -- Initialize search filter
+                            end
+                            
+                            -- Popup list
+                            if r.ImGui_BeginPopup(ctx, cat_popup_id) then
+                                r.ImGui_Text(ctx, "Search:")
+                                r.ImGui_SameLine(ctx)
+                                r.ImGui_SetNextItemWidth(ctx, 200)
+                                local filter_changed, new_filter = r.ImGui_InputText(ctx, "##cat_search_" .. i, item.cat_input or "", r.ImGui_InputTextFlags_AutoSelectAll())
+                                if filter_changed then
                                     item.cat_input = new_filter
                                 end
                                 r.ImGui_Separator(ctx)
                                 
+                                -- Filter and display list
                                 local has_any_match = false
-                                local filtered_cats = {}
                                 for _, cat in ipairs(cat_list) do
                                     if not item.cat_input or item.cat_input == "" or Helpers.FilterMatch(item.cat_input, cat) then
                                         has_any_match = true
-                                        table.insert(filtered_cats, cat)
-                                    end
-                                end
-                                
-                                if has_any_match then
-                                    for _, cat in ipairs(filtered_cats) do
                                         local is_selected = (cat_selected == cat)
-                                        if r.ImGui_Selectable(ctx, cat .. "##c", is_selected) then
+                                        if r.ImGui_Selectable(ctx, cat, is_selected) then
                                             item.cat_input = ""
                                             item.sub_zh_sel = ""
                                             item.sub_input = ""
                                             item.ucs_cat_id = ""
-                                            -- 根据语言转换：英文选择 -> 中文存储
+                                            -- Language conversion: EN selection -> ZH storage
                                             if app_state.display_language == "en" then
-                                                -- 英文选择：找到对应的中文category
                                                 if ucs_db.en_to_zh[cat] then
-                                                    -- en_to_zh[cat_en] 是一个table，包含所有sub的映射
-                                                    -- 我们需要找到第一个sub的映射来获取cat_zh
                                                     local first_sub_key = next(ucs_db.en_to_zh[cat])
                                                     if first_sub_key and ucs_db.en_to_zh[cat][first_sub_key] then
                                                         item.cat_zh_sel = ucs_db.en_to_zh[cat][first_sub_key].cat
                                                     end
                                                 end
                                             else
-                                                -- 中文选择：直接使用
                                                 item.cat_zh_sel = cat
                                             end
                                             NameProcessor.UpdateFinalName(item, app_state, Constants.UCS_OPTIONAL_FIELDS)
-                                        end
-                                        if is_selected then
-                                            r.ImGui_SetItemDefaultFocus(ctx)
+                                            r.ImGui_CloseCurrentPopup(ctx)
                                         end
                                     end
                                 end
                                 
-                                if item.cat_input and item.cat_input ~= "" and not has_any_match then
+                                if not has_any_match then
                                     local no_match_text = (app_state.display_language == "en") and "No match" or "无匹配项"
                                     r.ImGui_TextDisabled(ctx, no_match_text)
                                 end
                                 
-                                r.ImGui_EndCombo(ctx)
+                                r.ImGui_EndPopup(ctx)
                             end
 
-                            -- Col: SubCategory (可搜索Combo)
+                            -- Col: SubCategory (Editable Combo)
                             r.ImGui_TableSetColumnIndex(ctx, 2)
-                            r.ImGui_SetNextItemWidth(ctx, -1)
                             
                             -- 根据显示语言获取当前值和预览
-                            local sub_display, sub_list, sub_selected, sub_tree_data
+                            local sub_display, sub_tree_data, sub_selected
                             if app_state.display_language == "en" then
                                 -- 英文模式
                                 local sub_en_sel = ""
@@ -452,11 +495,9 @@ function GUI.Loop(ctx, modules)
                                 
                                 if item.cat_zh_sel and item.cat_zh_sel ~= "" then
                                     if item.sub_zh_sel and item.sub_zh_sel ~= "" and ucs_db.zh_to_en[item.cat_zh_sel] and ucs_db.zh_to_en[item.cat_zh_sel][item.sub_zh_sel] then
-                                        -- 有sub_zh_sel，直接获取对应的英文sub和cat
                                         sub_en_sel = ucs_db.zh_to_en[item.cat_zh_sel][item.sub_zh_sel].sub or ""
                                         cat_en_for_sub = ucs_db.zh_to_en[item.cat_zh_sel][item.sub_zh_sel].cat or ""
                                     elseif ucs_db.zh_to_en[item.cat_zh_sel] then
-                                        -- 没有sub_zh_sel，但从任意一个sub的映射中获取cat
                                         local first_sub_key = next(ucs_db.zh_to_en[item.cat_zh_sel])
                                         if first_sub_key and ucs_db.zh_to_en[item.cat_zh_sel][first_sub_key] then
                                             cat_en_for_sub = ucs_db.zh_to_en[item.cat_zh_sel][first_sub_key].cat or ""
@@ -474,40 +515,66 @@ function GUI.Loop(ctx, modules)
                                 sub_selected = item.sub_zh_sel
                             end
                             
-                            if r.ImGui_BeginCombo(ctx, "##sub", sub_display) then
-                                r.ImGui_SetNextItemWidth(ctx, -1)
-                                local sub_filter_changed, new_sub_filter = r.ImGui_InputText(ctx, "##sub_filter", item.sub_input or "", r.ImGui_InputTextFlags_AutoSelectAll())
-                                if sub_filter_changed then
-                                    item.sub_input = new_sub_filter
+                            -- Editable SubCategory: InputText + ArrowButton + Popup
+                            r.ImGui_SetNextItemWidth(ctx, -25)  -- Leave space for arrow button
+                            local sub_changed, new_sub = r.ImGui_InputText(ctx, "##sub_input_" .. i, sub_display or "", r.ImGui_InputTextFlags_None())
+                            if sub_changed then
+                                -- User typed directly - try to find matching ID
+                                if sub_tree_data then
+                                    local found_id = nil
+                                    for sub, id in pairs(sub_tree_data) do
+                                        if sub == new_sub then
+                                            found_id = id
+                                            break
+                                        end
+                                    end
+                                    if found_id then
+                                        item.ucs_cat_id = found_id
+                                        NameProcessor.SyncFromID(item, ucs_db, app_state, Constants.UCS_OPTIONAL_FIELDS)
+                                    else
+                                        -- No exact match, store as-is
+                                        item.sub_zh_sel = new_sub
+                                        item.ucs_cat_id = ""
+                                        NameProcessor.UpdateFinalName(item, app_state, Constants.UCS_OPTIONAL_FIELDS)
+                                    end
+                                end
+                            end
+                            
+                            -- Arrow button to open dropdown
+                            r.ImGui_SameLine(ctx, 0, 2)
+                            local sub_popup_id = "sub_popup_" .. tostring(i)
+                            if r.ImGui_ArrowButton(ctx, "##sub_arrow_" .. i, r.ImGui_Dir_Down()) then
+                                r.ImGui_OpenPopup(ctx, sub_popup_id)
+                                item.sub_input = sub_display or ""
+                            end
+                            
+                            -- Popup list
+                            if r.ImGui_BeginPopup(ctx, sub_popup_id) then
+                                r.ImGui_Text(ctx, "Search:")
+                                r.ImGui_SameLine(ctx)
+                                r.ImGui_SetNextItemWidth(ctx, 200)
+                                local filter_changed, new_filter = r.ImGui_InputText(ctx, "##sub_search_" .. i, item.sub_input or "", r.ImGui_InputTextFlags_AutoSelectAll())
+                                if filter_changed then
+                                    item.sub_input = new_filter
                                 end
                                 r.ImGui_Separator(ctx)
                                 
                                 if sub_tree_data then
                                     local has_any_match = false
-                                    local filtered_subs = {}
                                     for sub, id in pairs(sub_tree_data) do
                                         if not item.sub_input or item.sub_input == "" or Helpers.FilterMatch(item.sub_input, sub) then
                                             has_any_match = true
-                                            table.insert(filtered_subs, {sub = sub, id = id})
-                                        end
-                                    end
-                                    
-                                    if has_any_match then
-                                        for _, entry in ipairs(filtered_subs) do
-                                            local is_selected = (sub_selected == entry.sub)
-                                            if r.ImGui_Selectable(ctx, entry.sub .. "##" .. entry.id, is_selected) then
+                                            local is_selected = (sub_selected == sub)
+                                            if r.ImGui_Selectable(ctx, sub, is_selected) then
                                                 item.sub_input = ""
-                                                item.ucs_cat_id = entry.id
-                                                -- 使用SyncFromID来同步所有字段（包括cat_zh_sel和sub_zh_sel）
+                                                item.ucs_cat_id = id
                                                 NameProcessor.SyncFromID(item, ucs_db, app_state, Constants.UCS_OPTIONAL_FIELDS)
-                                            end
-                                            if is_selected then
-                                                r.ImGui_SetItemDefaultFocus(ctx)
+                                                r.ImGui_CloseCurrentPopup(ctx)
                                             end
                                         end
                                     end
                                     
-                                    if item.sub_input and item.sub_input ~= "" and not has_any_match then
+                                    if not has_any_match then
                                         local no_match_text = (app_state.display_language == "en") and "No match" or "无匹配项"
                                         r.ImGui_TextDisabled(ctx, no_match_text)
                                     end
@@ -516,11 +583,12 @@ function GUI.Loop(ctx, modules)
                                     r.ImGui_TextDisabled(ctx, no_cat_text)
                                 end
                                 
-                                r.ImGui_EndCombo(ctx)
+                                r.ImGui_EndPopup(ctx)
                             end
 
                             -- Col: CatID (只读) + Auto
                             r.ImGui_TableSetColumnIndex(ctx, 3)
+                            r.ImGui_AlignTextToFramePadding(ctx)  -- Align text vertically with buttons
                             
                             -- 显示 CatID
                             if item.ucs_cat_id and item.ucs_cat_id ~= "" then
@@ -550,7 +618,7 @@ function GUI.Loop(ctx, modules)
                             -- 高度给 17 或 18 像素，配合 Padding=0，文字绝对居中
                             if r.ImGui_Button(ctx, "Auto", 38, 17) then 
                                 NameProcessor.AutoMatchItem(item, ucs_db, app_state, Constants.UCS_OPTIONAL_FIELDS, 
-                                    UCSMatcher, Constants.WEIGHTS, Constants.MATCH_THRESHOLD, Constants.DOWNGRADE_WORDS, Helpers) 
+                                    UCSMatcher, Constants.WEIGHTS, Constants.MATCH_THRESHOLD, Constants.DOWNGRADE_WORDS, Helpers, Constants.SAFE_DOMINANT_KEYWORDS) 
                             end
                             
                             r.ImGui_PopStyleVar(ctx, 2)   -- 弹出 Padding 和 Rounding
@@ -741,7 +809,8 @@ function GUI.Loop(ctx, modules)
         
         if changes_count > 0 then
             if Theme.BtnPrimary(ctx, "APPLY " .. changes_count .. " CHANGES", button_width, 36) then
-                ProjectActions.ActionApply(app_state, ProjectActions, NameProcessor, Constants.UCS_OPTIONAL_FIELDS, ucs_db)
+                ProjectActions.ActionApply(app_state, ProjectActions, NameProcessor, Constants.UCS_OPTIONAL_FIELDS, ucs_db,
+                    UCSMatcher, Constants.WEIGHTS, Constants.MATCH_THRESHOLD, Constants.DOWNGRADE_WORDS, Helpers, Constants.SAFE_DOMINANT_KEYWORDS)
             end
         else
             r.ImGui_BeginDisabled(ctx)
@@ -751,7 +820,90 @@ function GUI.Loop(ctx, modules)
 
         -- [Footer: Status Log]
         r.ImGui_Separator(ctx)
+        
+        -- Version info on the left
+        r.ImGui_TextColored(ctx, 0x4DB6ACFF, string.format("v%s (%s)", Constants.VERSION, Constants.VERSION_DATE))
+        r.ImGui_SameLine(ctx)
+        r.ImGui_TextColored(ctx, 0x666666FF, " | ")
+        r.ImGui_SameLine(ctx)
+        
+        -- Status message
         r.ImGui_TextColored(ctx, 0xAAAAAAFF, "Log: " .. app_state.status_msg)
+        
+        -- [Alias Editor Popup Modal]
+        if r.ImGui_BeginPopupModal(ctx, "alias_editor_popup", true, r.ImGui_WindowFlags_AlwaysAutoResize()) then
+            r.ImGui_Text(ctx, "Add New Alias Rule")
+            r.ImGui_Separator(ctx)
+            r.ImGui_Dummy(ctx, 0, 5)
+            
+            -- Source input
+            r.ImGui_Text(ctx, "Source (input phrase):")
+            r.ImGui_SetNextItemWidth(ctx, 300)
+            local source_changed, new_source = r.ImGui_InputText(ctx, "##alias_source", app_state.alias_source or "")
+            if source_changed then
+                app_state.alias_source = new_source
+            end
+            
+            r.ImGui_Dummy(ctx, 0, 5)
+            
+            -- Target input
+            r.ImGui_Text(ctx, "Target (replacement):")
+            r.ImGui_SetNextItemWidth(ctx, 300)
+            local target_changed, new_target = r.ImGui_InputText(ctx, "##alias_target", app_state.alias_target or "")
+            if target_changed then
+                app_state.alias_target = new_target
+            end
+            
+            r.ImGui_Dummy(ctx, 0, 10)
+            r.ImGui_Separator(ctx)
+            r.ImGui_Dummy(ctx, 0, 5)
+            
+            -- Buttons
+            local can_save = (app_state.alias_source and app_state.alias_source ~= "") and 
+                           (app_state.alias_target and app_state.alias_target ~= "")
+            
+            if not can_save then
+                r.ImGui_BeginDisabled(ctx)
+            end
+            
+            if r.ImGui_Button(ctx, "Save", 145, 0) then
+                -- Save alias to file
+                local DataLoader = modules.DataLoader
+                
+                local success, msg = DataLoader.SaveUserAlias(
+                    script_path, 
+                    Constants.CSV_ALIAS_FILE, 
+                    app_state.alias_source:lower():match("^%s*(.-)%s*$"),
+                    app_state.alias_target:lower():match("^%s*(.-)%s*$")
+                )
+                
+                if success then
+                    -- Reload alias list
+                    DataLoader.LoadUserAlias(ucs_db, script_path, Constants.CSV_ALIAS_FILE, Helpers)
+                    app_state.status_msg = "Alias saved: " .. app_state.alias_source .. " -> " .. app_state.alias_target
+                    -- Clear inputs
+                    app_state.alias_source = ""
+                    app_state.alias_target = ""
+                    r.ImGui_CloseCurrentPopup(ctx)
+                else
+                    app_state.status_msg = "Error: " .. (msg or "Failed to save alias")
+                end
+            end
+            
+            if not can_save then
+                r.ImGui_EndDisabled(ctx)
+            end
+            
+            r.ImGui_SameLine(ctx)
+            
+            if r.ImGui_Button(ctx, "Cancel", 145, 0) then
+                app_state.alias_source = ""
+                app_state.alias_target = ""
+                r.ImGui_CloseCurrentPopup(ctx)
+            end
+            
+            r.ImGui_EndPopup(ctx)
+        end
 
         r.ImGui_End(ctx)
     end

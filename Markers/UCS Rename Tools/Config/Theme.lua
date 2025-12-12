@@ -103,6 +103,20 @@ function Theme.BtnSmall(ctx, label)
     return r.ImGui_SmallButton(ctx, label)
 end
 
+-- 5. Alias按钮 (紫色，用于Alias功能)
+function Theme.BtnAlias(ctx, label)
+    r.ImGui_PushStyleColor(ctx, r.ImGui_Col_Button(),        0x7B1FA2FF) -- 深紫色
+    r.ImGui_PushStyleColor(ctx, r.ImGui_Col_ButtonHovered(), 0x9C27B0FF) -- 亮紫色
+    r.ImGui_PushStyleColor(ctx, r.ImGui_Col_ButtonActive(),  0x6A1B9AFF) -- 点击后稍暗
+    local clicked = r.ImGui_Button(ctx, label)
+    r.ImGui_PopStyleColor(ctx, 3)
+    return clicked
+end
+
 return Theme
+
+
+
+
 
 

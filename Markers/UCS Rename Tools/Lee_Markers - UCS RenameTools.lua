@@ -1,5 +1,5 @@
--- @description ImGui Marker/Region Translator Pro (v10.0 Layout Perfected) - Modular Version
--- @version 10.0
+-- @description ImGui Marker/Region Translator Pro (v10.2 Enhanced UX) - Modular Version
+-- @version 10.2
 -- @author HongKun Li
 -- @about
 --   Modular Architecture: 
@@ -63,8 +63,9 @@ local app_state = Constants.createAppState()
 -- Use script_path from main file, not Helpers.GetScriptPath() (which would point to Helpers.lua)
 DataLoader.LoadUCSData(ucs_db, app_state, script_path, Constants.CSV_DB_FILE, Constants.CSV_ALIAS_FILE, Helpers)
 
--- Reload project data
-ProjectActions.ReloadProjectData(app_state, ucs_db, NameProcessor, Constants.UCS_OPTIONAL_FIELDS)
+-- Reload project data with smart initialization
+ProjectActions.ReloadProjectData(app_state, ucs_db, NameProcessor, Constants.UCS_OPTIONAL_FIELDS, 
+    UCSMatcher, Constants.WEIGHTS, Constants.MATCH_THRESHOLD, Constants.DOWNGRADE_WORDS, Helpers, Constants.SAFE_DOMINANT_KEYWORDS)
 
 -- Prepare module dependencies for GUI
 local modules = {
@@ -76,7 +77,8 @@ local modules = {
     NameProcessor = NameProcessor,
     ProjectActions = ProjectActions,
     ucs_db = ucs_db,
-    app_state = app_state
+    app_state = app_state,
+    script_path = script_path
 }
 
 -- Start main loop

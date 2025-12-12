@@ -70,9 +70,9 @@ function NameProcessor.SyncFromID(item, ucs_db, app_state, ucs_optional_fields)
     NameProcessor.UpdateFinalName(item, app_state, ucs_optional_fields)
 end
 
-function NameProcessor.AutoMatchItem(item, ucs_db, app_state, ucs_optional_fields, ucs_matcher, weights, match_threshold, downgrade_words, helpers)
+function NameProcessor.AutoMatchItem(item, ucs_db, app_state, ucs_optional_fields, ucs_matcher, weights, match_threshold, downgrade_words, helpers, safe_dominant_keywords)
     if #ucs_db.flat_list > 0 then
-        local match = ucs_matcher.FindBestUCS(item.trans_name, ucs_db, weights, match_threshold, downgrade_words, helpers)
+        local match = ucs_matcher.FindBestUCS(item.trans_name, ucs_db, weights, match_threshold, downgrade_words, helpers, safe_dominant_keywords)
         if match then
             item.ucs_cat_id = match.id
             item.cat_zh_sel = match.raw_cat_zh

@@ -1,9 +1,12 @@
--- @description Lee_RadialMenu - 轮盘菜单运行态
--- @author Lee
+-- @description RadialMenu Tool - Main Runtime
 -- @version 1.0.0
+-- @author Lee
 -- @about
---   轮盘菜单工具的主运行入口
---   轻量级运行态，只负责显示轮盘和执行动作
+--   轮盘菜单工具的主运行入口脚本
+--   提供轮盘式快捷菜单功能，支持快速访问 Actions、FX 等资源
+--   轻量级运行态，负责显示轮盘界面和执行用户选择的操作
+-- @provides
+--   [main] .
 
 -- ============================================================================
 -- 版本信息

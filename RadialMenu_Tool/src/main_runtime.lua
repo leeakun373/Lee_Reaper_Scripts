@@ -194,8 +194,14 @@ function M.loop()
     reaper.ImGui_SetNextWindowSize(ctx, window_width, window_height, reaper.ImGui_Cond_Always())
     
     if is_first_display then
-        local mouse_x, mouse_y = reaper.GetMousePosition()
-        if mouse_x and mouse_y then
+        -- [FIX] Get Native Mouse Position
+        local native_x, native_y = reaper.GetMousePosition()
+        
+        if native_x and native_y then
+            -- [FIX] Convert Native (OS) coordinates to ImGui coordinates
+            -- false means: convert FROM native TO imgui
+            local mouse_x, mouse_y = reaper.ImGui_PointConvertNative(ctx, native_x, native_y, false)
+            
             local window_x = mouse_x - window_width / 2
             local window_y = mouse_y - window_height / 2
             
