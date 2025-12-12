@@ -44,17 +44,26 @@ end
 -- Phase 3 - 绘制子菜单 (主入口)
 -- ============================================================================
 
-function M.draw_submenu(ctx, sector_data, center_x, center_y)
+function M.draw_submenu(ctx, sector_data, center_x, center_y, anim_scale)
     if not sector_data then return false end  -- Return false if no sector data
     
+    anim_scale = anim_scale or 1.0
     current_sector = sector_data
     
-    -- 1. 计算智能位置
+    -- [REVERTED] 移除 Pop 动画。使用固定大小和位置。
+    -- 我们仍然使用 anim_scale 仅用于透明度（Alpha），这是稳定的。
+    
+    -- 1. 计算智能位置（固定位置）
     local x, y = M.calculate_submenu_position(ctx, sector_data, center_x, center_y)
     
-    -- 2. 设置窗口属性
+    -- 2. 固定位置（由 calculate_submenu_position 计算）
     reaper.ImGui_SetNextWindowPos(ctx, x, y, reaper.ImGui_Cond_Always())
+    
+    -- 3. 固定大小（常量）
     reaper.ImGui_SetNextWindowSize(ctx, SUBMENU_WIDTH, SUBMENU_HEIGHT, reaper.ImGui_Cond_Always())
+    
+    -- 4. 保留透明度淡入（微妙且安全）
+    reaper.ImGui_SetNextWindowBgAlpha(ctx, 0.95 * anim_scale)
     
     -- 3. 样式设置 (深色背景容器)
     
@@ -74,6 +83,10 @@ function M.draw_submenu(ctx, sector_data, center_x, center_y)
 
     -- Flag to track if submenu is hovered
     local is_submenu_hovered = false
+
+    -- 注意：不应用 Alpha 样式变量，因为它可能影响按钮交互
+    -- 只使用背景透明度（SetNextWindowBgAlpha）来实现淡入效果
+    -- 这样可以保持按钮的交互性不受影响
 
     if reaper.ImGui_Begin(ctx, "##Submenu_" .. sector_data.id, true, reaper.ImGui_WindowFlags_NoDecoration() | reaper.ImGui_WindowFlags_NoMove()) then
         -- [FIX] Check if this window is hovered (including items inside it)
@@ -106,6 +119,7 @@ function M.draw_submenu(ctx, sector_data, center_x, center_y)
         reaper.ImGui_End(ctx)
     end
     
+    -- 注意：不再需要 PopStyleVar 来恢复 Alpha，因为我们没有应用它
     reaper.ImGui_PopStyleVar(ctx, 4)
     reaper.ImGui_PopStyleColor(ctx, 2)
     

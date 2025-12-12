@@ -21,7 +21,11 @@ local hovered_sector_id = nil
 -- @param config: 配置对象
 -- @param active_sector_id: 当前激活的扇区 ID (子菜单打开时高亮，可选)
 -- @param is_pinned: 是否处于 Pin 住状态 (可选)
-function M.draw_wheel(ctx, config, active_sector_id, is_pinned)
+-- @param anim_scale: 动画缩放因子 (0.0 到 1.0，默认 1.0)
+-- @param sector_anim_states: 扇区扩展动画状态表 (可选)
+function M.draw_wheel(ctx, config, active_sector_id, is_pinned, anim_scale, sector_anim_states)
+    anim_scale = anim_scale or 1.0
+    sector_anim_states = sector_anim_states or {}
     if not ctx or not config or not config.sectors then return end
     
     local draw_list = reaper.ImGui_GetWindowDrawList(ctx)
@@ -37,28 +41,45 @@ function M.draw_wheel(ctx, config, active_sector_id, is_pinned)
     local center_y = window_y + window_h / 2
     local mouse_x, mouse_y = reaper.ImGui_GetMousePos(ctx)
     
+    -- 应用动画透明度
+    reaper.ImGui_PushStyleVar(ctx, reaper.ImGui_StyleVar_Alpha(), anim_scale)
+    
     -- 1. 获取悬停扇区
     local hovered_sector = M.get_hovered_sector(mouse_x, mouse_y, center_x, center_y, config)
     hovered_sector_id = hovered_sector and hovered_sector.id or nil
     
-    -- 2. 绘制所有扇区
+    -- 应用动画缩放到基础半径
+    local inner_radius = config.menu.inner_radius * anim_scale
+    local base_outer_radius = config.menu.outer_radius * anim_scale
+    
+    -- 2. 绘制所有扇区（每个扇区可能有不同的扩展半径）
     for i, sector in ipairs(config.sectors) do
         local is_hovered = (hovered_sector_id == sector.id)
         -- 只要 active_id 匹配，就强制高亮 (视觉连接)
         local is_active = (active_sector_id and tonumber(active_sector_id) == tonumber(sector.id))
         
-        M.draw_sector(draw_list, ctx, center_x, center_y, sector, i, #config.sectors, is_hovered, is_active, config)
+        -- [ANIMATION] 获取此扇区的扩展进度
+        local expansion_progress = sector_anim_states[sector.id] or 0.0
+        local expansion_pixels = (config.menu.hover_expansion_pixels or 10) * expansion_progress
+        
+        -- 计算此扇区的动态外半径
+        local current_sector_outer = base_outer_radius + expansion_pixels
+        
+        M.draw_sector(draw_list, ctx, center_x, center_y, sector, i, #config.sectors, is_hovered, is_active, config, inner_radius, current_sector_outer)
     end
     
     -- 3. 绘制中心圆 (甜甜圈效果)
     if config.menu then
-        M.draw_center_circle(draw_list, ctx, center_x, center_y, config)
+        M.draw_center_circle(draw_list, ctx, center_x, center_y, config, inner_radius)
     end
     
     -- 4. 绘制中心 Pin 按钮
     if config.menu then
         M.draw_pin_button(draw_list, center_x, center_y, config, is_pinned or false)
     end
+    
+    -- 恢复透明度
+    reaper.ImGui_PopStyleVar(ctx)
 end
 
 -- ============================================================================
@@ -104,12 +125,13 @@ function M.draw_pin_button(draw_list, center_x, center_y, config, is_pinned)
 end
 
 -- 绘制单个扇区 (高保真版本，支持渐变)
-function M.draw_sector(draw_list, ctx, center_x, center_y, sector, index, total_sectors, is_hovered, is_active, config)
+function M.draw_sector(draw_list, ctx, center_x, center_y, sector, index, total_sectors, is_hovered, is_active, config, inner_radius, outer_radius)
     local rotation_offset = -math.pi / 2
     local start_angle, end_angle = math_utils.get_sector_angles(index, total_sectors, rotation_offset)
     
-    local inner_radius = config.menu.inner_radius
-    local outer_radius = config.menu.outer_radius
+    -- 使用传入的动画缩放后的半径，如果没有传入则使用配置值
+    inner_radius = inner_radius or config.menu.inner_radius
+    outer_radius = outer_radius or config.menu.outer_radius
     
     -- 几何间隙 (Gap) - 使用新的 gap_size
     local gap_radians = (styles.sizes.gap_size or 3.0) / outer_radius
@@ -251,8 +273,8 @@ function M.draw_sector_border_line(draw_list, center_x, center_y, inner_radius, 
 end
 
 -- 绘制中心圆 (无边框甜甜圈)
-function M.draw_center_circle(draw_list, ctx, center_x, center_y, config)
-    local outer_radius = config.menu.inner_radius
+function M.draw_center_circle(draw_list, ctx, center_x, center_y, config, anim_inner_radius)
+    local outer_radius = anim_inner_radius or config.menu.inner_radius
     local inner_radius = outer_radius - 6
     -- 使用修正的颜色打包函数
     local dark_grey = styles.correct_rgba_to_u32({63, 60, 64, 255})

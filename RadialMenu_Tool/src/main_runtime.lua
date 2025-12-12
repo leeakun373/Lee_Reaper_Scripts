@@ -37,6 +37,14 @@ local KEY_START_STATE = nil
 -- 配置热重载跟踪
 local last_config_update_time = nil
 
+-- 动画状态变量
+local anim_open_start_time = 0
+local anim_submenu_start_time = 0
+local last_submenu_state = false
+local last_active_sector_id = nil
+-- 扇区扩展动画状态（每个扇区ID对应一个0.0-1.0的进度值）
+local sector_anim_states = {}
+
 -- ============================================================================
 -- Phase 2 - 初始化
 -- ============================================================================
@@ -82,6 +90,11 @@ function M.init()
     
     -- 记录脚本启动时间
     SCRIPT_START_TIME = reaper.time_precise()
+    
+    -- 初始化动画开始时间
+    anim_open_start_time = reaper.time_precise()
+    anim_submenu_start_time = 0
+    last_submenu_state = false
     
     -- 检测并拦截触发按键（参考 Sexan_Pie3000 的实现）
     local key_state = reaper.JS_VKeys_GetState(SCRIPT_START_TIME - 1)
@@ -169,9 +182,12 @@ function M.loop()
             M.cleanup()
             return
         end
-        -- 如果已 Pin 住，ESC 键不关闭窗口，只关闭子菜单
-        show_submenu = false
-        clicked_sector = nil
+        -- [核心] 拖拽逻辑锁：如果正在拖拽，ESC 键不关闭子菜单
+        if not list_view.is_dragging() then
+            -- 如果已 Pin 住，ESC 键不关闭窗口，只关闭子菜单
+            show_submenu = false
+            clicked_sector = nil
+        end
     end
     
     -- ============================================================
@@ -278,9 +294,106 @@ function M.draw()
     local inner_radius = config.menu.inner_radius or 50
     local outer_radius = config.menu.outer_radius or 200
     
+    -- ============================================================
+    -- 动画计算：轮盘展开动画
+    -- ============================================================
+    local now = reaper.time_precise()
+    local anim_scale = 1.0
+    
+    if config.menu.animation and config.menu.animation.enable then
+        local open_dur = config.menu.animation.duration_open or 0.06
+        local t_open = math.max(0, math.min(1, (now - anim_open_start_time) / open_dur))
+        anim_scale = math_utils.ease_out_cubic(t_open)
+    end
+    
+    -- ============================================================
+    -- 动画计算：子菜单弹出动画
+    -- ============================================================
+    -- [核心] 拖拽逻辑锁：检测是否正在拖拽
+    local is_dragging = list_view.is_dragging()
+    
+    -- [FIX] 触发动画：如果菜单刚打开 OR 如果切换到不同的扇区
+    local current_sector_id = clicked_sector and clicked_sector.id or nil
+    
+    -- 检查条件：
+    -- 1. 菜单之前没打开，现在打开了
+    -- 2. 菜单之前打开了，但扇区ID改变了（切换扇区）
+    if show_submenu and (not last_submenu_state or current_sector_id ~= last_active_sector_id) then
+        anim_submenu_start_time = now
+    end
+    
+    last_submenu_state = show_submenu
+    last_active_sector_id = current_sector_id
+    
+    local sub_scale = 1.0
+    if show_submenu and config.menu.animation and config.menu.animation.enable then
+        local sub_dur = config.menu.animation.duration_submenu or 1.0  -- [TESTING] 持续1秒以便观察动画效果
+        local t_sub = math.max(0, math.min(1, (now - anim_submenu_start_time) / sub_dur))
+        sub_scale = math_utils.ease_out_cubic(t_sub)
+    elseif not show_submenu then
+        sub_scale = 0.0
+    end
+    
+    -- [CRITICAL FIX] 拖拽稳定性锁
+    -- 如果用户正在拖拽项目，强制完整缩放并保持打开状态，防止闪烁/故障
+    if is_dragging then
+        sub_scale = 1.0  -- 强制完整缩放
+        show_submenu = true  -- 防止自动关闭逻辑
+        
+        -- 同时确保 clicked_sector 在拖拽期间不会切换
+        -- （这个逻辑通常在悬停部分处理，但在这里确保也很重要）
+    end
+    
+    -- ============================================================
+    -- [ANIMATION] 计算扇区扩展动画状态
+    -- ============================================================
+    local expansion_speed = config.menu.hover_animation_speed or 0.2
+    
+    -- 计算当前悬停的扇区ID（需要在绘制前获取）
+    -- 获取鼠标位置和窗口中心点来计算悬停扇区
+    local mouse_x, mouse_y = reaper.ImGui_GetMousePos(ctx)
+    local center_x = win_x + win_w / 2
+    local center_y = win_y + win_h / 2
+    
+    -- 计算悬停扇区（使用与 wheel.lua 相同的逻辑，但不应用 anim_scale）
+    local current_hover_id = nil
+    if config.sectors then
+        local math_utils = require("math_utils")
+        local angle, distance = math_utils.get_mouse_angle_and_distance(mouse_x, mouse_y, center_x, center_y)
+        -- 注意：悬停检测使用原始半径，不受轮盘展开动画影响
+        local inner_radius = config.menu.inner_radius
+        local outer_radius = config.menu.outer_radius
+        
+        if distance >= inner_radius and distance <= outer_radius then
+            local sector_index = math_utils.angle_to_sector_index(angle, #config.sectors, -math.pi / 2)
+            if sector_index >= 1 and sector_index <= #config.sectors then
+                current_hover_id = config.sectors[sector_index].id
+            end
+        end
+    end
+    
+    if config.sectors then
+        for _, sector in ipairs(config.sectors) do
+            local id = sector.id
+            local current_val = sector_anim_states[id] or 0.0
+            
+            -- [FIX] 保持扩展状态：如果鼠标悬停 OR 如果该扇区的子菜单已打开
+            local is_active_submenu = (show_submenu and clicked_sector and clicked_sector.id == id)
+            local target_val = ((id == current_hover_id) or is_active_submenu) and 1.0 or 0.0
+            
+            -- 平滑插值
+            if math.abs(current_val - target_val) > 0.001 then
+                -- 简单 Lerp: current + (target - current) * speed
+                sector_anim_states[id] = current_val + (target_val - current_val) * expansion_speed
+            else
+                sector_anim_states[id] = target_val
+            end
+        end
+    end
+    
     -- 1. 绘制轮盘 (背景层)
     local active_id = (show_submenu and clicked_sector) and clicked_sector.id or nil
-    wheel.draw_wheel(ctx, config, active_id, is_pinned)
+    wheel.draw_wheel(ctx, config, active_id, is_pinned, anim_scale, sector_anim_states)
     
     -- ============================================================
     -- 2. 优化拖拽手感：InvisibleButton 覆盖中心
@@ -354,18 +467,21 @@ function M.draw()
     -- ============================================================
     -- 3. 悬停打开子菜单逻辑 (Hover to Open)
     -- ============================================================
-    -- [New Hover Logic]
-    local hovered_id = wheel.get_hovered_sector_id()
-    
-    -- [FIX] Added check: `and not list_view.is_dragging()`
-    -- Prevents switching sectors while the user is dragging an item
-    if config.menu.hover_to_open and hovered_id and not list_view.is_dragging() then
-        -- Only trigger if we are hovering a NEW sector (prevent flickering/toggling)
-        if not clicked_sector or clicked_sector.id ~= hovered_id then
-            local sector = config_manager.get_sector_by_id(config, hovered_id)
-            if sector then
-                clicked_sector = sector
-                show_submenu = true
+    -- [核心] 拖拽逻辑锁：如果正在拖拽，完全禁止悬停切换扇区
+    if not is_dragging then
+        -- [New Hover Logic]
+        local hovered_id = wheel.get_hovered_sector_id()
+        
+        -- [FIX] Added check: `and not is_dragging`
+        -- Prevents switching sectors while the user is dragging an item
+        if config.menu.hover_to_open and hovered_id then
+            -- Only trigger if we are hovering a NEW sector (prevent flickering/toggling)
+            if not clicked_sector or clicked_sector.id ~= hovered_id then
+                local sector = config_manager.get_sector_by_id(config, hovered_id)
+                if sector then
+                    clicked_sector = sector
+                    show_submenu = true
+                end
             end
         end
     end
@@ -373,6 +489,11 @@ function M.draw()
     -- ============================================================
     -- 4. 绘制子菜单（先绘制以获取悬停状态）
     -- ============================================================
+    -- [核心] 拖拽逻辑锁：如果正在拖拽，强制保持子菜单打开
+    if is_dragging and clicked_sector then
+        show_submenu = true
+    end
+    
     -- 子菜单作为独立的 Window 绘制，或者作为当前 Window 的内容
     -- 为了避免坐标系混乱，我们在当前 DrawList 上绘制，或者使用 BeginChild
     
@@ -384,7 +505,7 @@ function M.draw()
         -- 这意味着子菜单是一个独立的 ImGui 窗口，这很好！
         -- 独立窗口不会被主窗口的透明区域遮挡问题影响
         -- 现在返回悬停状态，以便主运行时知道用户正在与子菜单交互
-        is_submenu_hovered = list_view.draw_submenu(ctx, clicked_sector, center_x, center_y)
+        is_submenu_hovered = list_view.draw_submenu(ctx, clicked_sector, center_x, center_y, sub_scale)
     end
     
     -- ============================================================
@@ -433,6 +554,13 @@ end
 -- ============================================================================
 
 function M.handle_sector_click(center_x, center_y, inner_radius, outer_radius, is_submenu_hovered)
+    -- [核心] 拖拽逻辑锁：如果正在拖拽，完全禁止所有扇区点击逻辑
+    local is_dragging = list_view.is_dragging()
+    if is_dragging then
+        -- 拖拽时强制保持子菜单打开状态，禁止任何切换
+        return
+    end
+    
     -- 获取鼠标位置
     local mouse_x, mouse_y = reaper.ImGui_GetMousePos(ctx)
     local win_x, win_y = reaper.ImGui_GetWindowPos(ctx)
@@ -464,9 +592,9 @@ function M.handle_sector_click(center_x, center_y, inner_radius, outer_radius, i
     elseif distance > outer_radius then
         -- [核心] 解决大框遮挡问题：
         -- 如果鼠标在轮盘外部，点击时我们希望穿透下去。
-        -- [FIX] Only close if clicked AND NOT hovering the submenu
+        -- [FIX] Only close if clicked AND NOT hovering the submenu AND NOT dragging
         if reaper.ImGui_IsMouseClicked(ctx, 0) then
-            if show_submenu and not is_submenu_hovered then
+            if show_submenu and not is_submenu_hovered and not is_dragging then
                 -- 点击了外部且没有悬停在子菜单上，关闭子菜单
                 show_submenu = false
                 clicked_sector = nil
@@ -478,6 +606,11 @@ end
 -- 当扇区被点击时调用
 function M.on_sector_click(sector)
     if not sector then return end
+    
+    -- [核心] 拖拽逻辑锁：如果正在拖拽，禁止切换扇区
+    if list_view.is_dragging() then
+        return
+    end
     
     if clicked_sector and clicked_sector.id == sector.id then
         show_submenu = false

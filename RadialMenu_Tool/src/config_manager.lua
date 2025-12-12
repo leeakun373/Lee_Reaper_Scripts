@@ -39,7 +39,14 @@ function M.get_default()
             hover_brightness = 1.3,       -- 悬停时亮度增加倍数
             animation_speed = 0.2,        -- 动画速度
             max_slots_per_sector = 9,     -- 每个扇区最大槽位数
-            hover_to_open = false         -- 悬停打开子菜单（false = 点击打开）
+            hover_to_open = false,        -- 悬停打开子菜单（false = 点击打开）
+            hover_expansion_pixels = 10,   -- 悬停时扇区向外扩展的像素数
+            hover_animation_speed = 0.2,   -- 悬停扩展动画速度 (0.0 - 1.0)
+            animation = {
+                enable = true,             -- 是否启用动画
+                duration_open = 0.06,      -- 轮盘展开时间（秒）- 极速模式
+                duration_submenu = 0.05    -- 子菜单弹出时间（秒）- 极速模式
+            }
         },
         
         -- 颜色配置（RGBA格式，0-255）

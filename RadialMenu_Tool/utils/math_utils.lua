@@ -238,4 +238,36 @@ function M.adjust_brightness(color, brightness)
     }
 end
 
+-- ============================================================================
+-- Phase 4 - 缓动函数 (Easing Functions)
+-- ============================================================================
+
+-- 缓动函数：Ease Out Cubic (快速开始，缓慢结束)
+-- t: 当前时间进度 (0.0 到 1.0)
+-- 返回: 缓动后的进度值 (0.0 到 1.0)
+function M.ease_out_cubic(t)
+    t = M.clamp(t, 0, 1)
+    return 1 - (1 - t) ^ 3
+end
+
+-- 缓动函数：Ease Out Quart (四次方，比 Cubic 更激进)
+-- t: 当前时间进度 (0.0 到 1.0)
+-- 返回: 缓动后的进度值 (0.0 到 1.0)
+function M.ease_out_quart(t)
+    t = M.clamp(t, 0, 1)
+    return 1 - (1 - t) ^ 4
+end
+
+-- 缓动函数：Back Out (回弹效果，会稍微超过目标值然后回弹)
+-- t: 当前时间进度 (0.0 到 1.0)
+-- overshoot: 回弹幅度 (默认 1.70158，标准值)
+-- 返回: 缓动后的进度值 (可能超过 1.0，需要 clamp)
+function M.ease_out_back(t, overshoot)
+    overshoot = overshoot or 1.70158
+    t = M.clamp(t, 0, 1)
+    local c1 = overshoot + 1
+    local c3 = c1 + 1
+    return 1 + c3 * (t - 1) ^ 3 + c1 * (t - 1) ^ 2
+end
+
 return M
